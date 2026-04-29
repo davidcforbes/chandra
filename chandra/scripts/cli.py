@@ -1,12 +1,29 @@
+from __future__ import annotations
+
 import json
+import logging
+import sys
+from itertools import islice
 from pathlib import Path
-from typing import List
+from typing import Iterable, Iterator, List
 
 import click
 
-from chandra.input import load_file
+from chandra.input import count_file_pages, iter_file_pages
 from chandra.model import InferenceManager
 from chandra.model.schema import BatchInputItem
+
+logger = logging.getLogger(__name__)
+
+
+def _chunked(it: Iterable, size: int) -> Iterator[list]:
+    """Yield successive ``size``-element chunks from ``it``."""
+    iterator = iter(it)
+    while True:
+        chunk = list(islice(iterator, size))
+        if not chunk:
+            return
+        yield chunk
 
 
 def get_supported_files(input_path: Path) -> List[Path]:
@@ -29,10 +46,13 @@ def get_supported_files(input_path: Path) -> List[Path]:
             raise click.BadParameter(f"Unsupported file type: {input_path.suffix}")
 
     elif input_path.is_dir():
-        files = []
+        # Use a set to dedupe — case-insensitive filesystems (Windows, macOS
+        # default) match the lowercase and uppercase glob patterns to the same
+        # underlying file.
+        files: set[Path] = set()
         for ext in supported_extensions:
-            files.extend(input_path.glob(f"*{ext}"))
-            files.extend(input_path.glob(f"*{ext.upper()}"))
+            files.update(input_path.glob(f"*{ext}"))
+            files.update(input_path.glob(f"*{ext.upper()}"))
         return sorted(files)
 
     else:
@@ -48,12 +68,10 @@ def save_merged_output(
     paginate_output: bool = False,
 ):
     """Save merged OCR results for all pages to output directory."""
-    # Create subfolder for this file
     safe_name = Path(file_name).stem
     file_output_dir = output_dir / safe_name
     file_output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Merge all pages
     all_markdown = []
     all_html = []
     all_metadata = []
@@ -61,9 +79,7 @@ def save_merged_output(
     total_chunks = 0
     total_images = 0
 
-    # Process each page result
     for page_num, result in enumerate(results):
-        # Add page separator for multi-page documents
         if page_num > 0 and paginate_output:
             all_markdown.append(f"\n\n{page_num}" + "-" * 48 + "\n\n")
             all_html.append(f"\n\n<!-- Page {page_num + 1} -->\n\n")
@@ -71,12 +87,10 @@ def save_merged_output(
         all_markdown.append(result.markdown)
         all_html.append(result.html)
 
-        # Ensure page separation in merged output
         if not paginate_output and page_num < len(results) - 1:
             all_markdown.append("\n\n")
             all_html.append("\n\n")
 
-        # Accumulate metadata
         total_tokens += result.token_count
         total_chunks += len(result.chunks)
         total_images += len(result.images)
@@ -90,27 +104,21 @@ def save_merged_output(
         }
         all_metadata.append(page_metadata)
 
-        # Save extracted images if requested
         if save_images and result.images:
-            images_dir = file_output_dir
-            images_dir.mkdir(exist_ok=True)
-
+            file_output_dir.mkdir(exist_ok=True)
             for img_name, pil_image in result.images.items():
-                img_path = images_dir / img_name
+                img_path = file_output_dir / img_name
                 pil_image.save(img_path)
 
-    # Save merged markdown
     markdown_path = file_output_dir / f"{safe_name}.md"
     with open(markdown_path, "w", encoding="utf-8") as f:
         f.write("".join(all_markdown))
 
-    # Save merged HTML if requested
     if save_html:
         html_path = file_output_dir / f"{safe_name}.html"
         with open(html_path, "w", encoding="utf-8") as f:
             f.write("".join(all_html))
 
-    # Save combined metadata
     metadata = {
         "file_name": file_name,
         "num_pages": len(results),
@@ -126,7 +134,80 @@ def save_merged_output(
     click.echo(f"  Saved: {markdown_path} ({len(results)} page(s))")
 
 
-@click.command()
+def _process_single_file(
+    file_path: Path,
+    output_path: Path,
+    model: InferenceManager,
+    method: str,
+    page_range: str | None,
+    max_output_tokens: int | None,
+    max_workers: int | None,
+    max_retries: int | None,
+    include_images: bool,
+    include_headers_footers: bool,
+    save_html: bool,
+    batch_size: int,
+    paginate_output: bool,
+) -> bool:
+    """Process one file. Returns True on success, False on failure."""
+    config = {"page_range": page_range} if page_range else {}
+
+    try:
+        page_count = count_file_pages(str(file_path), config)
+    except (ValueError, OSError) as exc:
+        click.echo(f"  Error counting pages of {file_path.name}: {exc}", err=True)
+        return False
+
+    click.echo(f"  Found {page_count} page(s)")
+
+    pages_iter = iter_file_pages(str(file_path), config)
+    all_results = []
+    pages_processed = 0
+
+    try:
+        for batch in _chunked(pages_iter, batch_size):
+            batch_start = pages_processed + 1
+            batch_end = pages_processed + len(batch)
+            click.echo(f"  Processing pages {batch_start}-{batch_end}...")
+
+            batch_items = [
+                BatchInputItem(image=img, prompt_type="ocr_layout") for img in batch
+            ]
+
+            generate_kwargs: dict = {
+                "include_images": include_images,
+                "include_headers_footers": include_headers_footers,
+            }
+            if max_output_tokens is not None:
+                generate_kwargs["max_output_tokens"] = max_output_tokens
+            if method == "vllm":
+                if max_workers is not None:
+                    generate_kwargs["max_workers"] = max_workers
+                if max_retries is not None:
+                    generate_kwargs["max_retries"] = max_retries
+
+            results = model.generate(batch_items, **generate_kwargs)
+            all_results.extend(results)
+            pages_processed = batch_end
+
+        save_merged_output(
+            output_path,
+            file_path.name,
+            all_results,
+            save_images=include_images,
+            save_html=save_html,
+            paginate_output=paginate_output,
+        )
+        click.echo(f"  Completed: {file_path.name}")
+        return True
+    except Exception as exc:  # noqa: BLE001 — surface to user, continue with next file
+        click.echo(f"  Error processing {file_path.name}: {exc}", err=True)
+        logger.exception("Error processing %s", file_path.name)
+        return False
+
+
+@click.command(context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(package_name="chandra-ocr", prog_name="chandra")
 @click.argument("input_path", type=click.Path(exists=True, path_type=Path))
 @click.argument("output_path", type=click.Path(path_type=Path))
 @click.option(
@@ -139,7 +220,7 @@ def save_merged_output(
     "--page-range",
     type=str,
     default=None,
-    help="Page range for PDFs (e.g., '1-5,7,9-12'). Only applicable to PDF files.",
+    help="1-indexed page range for PDFs (e.g., '1-5,7,9-12'). Only applicable to PDF files.",
 )
 @click.option(
     "--max-output-tokens",
@@ -157,7 +238,7 @@ def save_merged_output(
     "--max-retries",
     type=int,
     default=None,
-    help="Maximum number of retries for vLLM inference.",
+    help="Maximum number of retries for vLLM inference (covers both repeat-token and transient-error paths).",
 )
 @click.option(
     "--include-images/--no-images",
@@ -181,9 +262,33 @@ def save_merged_output(
     help="Number of pages to process in a batch.",
 )
 @click.option(
+    "--paginate-output/--no-paginate-output",
+    "paginate_output",
+    default=False,
+    help="Insert page separators in merged output.",
+)
+@click.option(
     "--paginate_output",
+    "paginate_output_legacy",
     is_flag=True,
     default=False,
+    hidden=True,
+    help="Deprecated alias for --paginate-output.",
+)
+@click.option(
+    "--log-level",
+    default="WARNING",
+    show_default=True,
+    type=click.Choice(
+        ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False
+    ),
+    help="Python logging level for chandra modules.",
+)
+@click.option(
+    "--fail-fast",
+    is_flag=True,
+    default=False,
+    help="Stop processing on the first file failure.",
 )
 def main(
     input_path: Path,
@@ -198,31 +303,38 @@ def main(
     save_html: bool,
     batch_size: int,
     paginate_output: bool,
+    paginate_output_legacy: bool,
+    log_level: str,
+    fail_fast: bool,
 ):
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper()),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    paginate_output = paginate_output or paginate_output_legacy
+
     if method == "hf":
         click.echo(
-            "When using '--method hf', ensure that the batch size is set correctly.  We will default to batch size of 1."
+            "When using '--method hf', ensure that the batch size is set correctly. "
+            "We will default to batch size of 1."
         )
         if batch_size is None:
             batch_size = 1
-    elif method == "vllm":
-        if batch_size is None:
-            batch_size = 28
+    elif method == "vllm" and batch_size is None:
+        batch_size = 28
 
     click.echo("Chandra CLI - Starting OCR processing")
     click.echo(f"Input: {input_path}")
     click.echo(f"Output: {output_path}")
     click.echo(f"Method: {method}")
 
-    # Create output directory
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Load model
     click.echo(f"\nLoading model with method '{method}'...")
     model = InferenceManager(method=method)
     click.echo("Model loaded successfully.")
 
-    # Get files to process
     files_to_process = get_supported_files(input_path)
     click.echo(f"\nFound {len(files_to_process)} file(s) to process.")
 
@@ -230,70 +342,39 @@ def main(
         click.echo("No supported files found. Exiting.")
         return
 
-    # Process each file
+    failures = 0
     for file_idx, file_path in enumerate(files_to_process, 1):
         click.echo(
             f"\n[{file_idx}/{len(files_to_process)}] Processing: {file_path.name}"
         )
+        ok = _process_single_file(
+            file_path=file_path,
+            output_path=output_path,
+            model=model,
+            method=method,
+            page_range=page_range,
+            max_output_tokens=max_output_tokens,
+            max_workers=max_workers,
+            max_retries=max_retries,
+            include_images=include_images,
+            include_headers_footers=include_headers_footers,
+            save_html=save_html,
+            batch_size=batch_size,
+            paginate_output=paginate_output,
+        )
+        if not ok:
+            failures += 1
+            if fail_fast:
+                break
 
-        try:
-            # Load images from file
-            config = {"page_range": page_range} if page_range else {}
-            images = load_file(str(file_path), config)
-            click.echo(f"  Loaded {len(images)} page(s)")
+    summary = (
+        f"\nProcessed {len(files_to_process)} file(s); "
+        f"{failures} failed. Results saved to: {output_path}"
+    )
+    click.echo(summary)
 
-            # Accumulate all results for this document
-            all_results = []
-
-            # Process pages in batches
-            for batch_start in range(0, len(images), batch_size):
-                batch_end = min(batch_start + batch_size, len(images))
-                batch_images = images[batch_start:batch_end]
-
-                # Create batch input items
-                batch = [
-                    BatchInputItem(image=img, prompt_type="ocr_layout")
-                    for img in batch_images
-                ]
-
-                # Run inference
-                click.echo(f"  Processing pages {batch_start + 1}-{batch_end}...")
-
-                # Build kwargs for generate
-                generate_kwargs = {
-                    "include_images": include_images,
-                    "include_headers_footers": include_headers_footers,
-                }
-
-                if max_output_tokens is not None:
-                    generate_kwargs["max_output_tokens"] = max_output_tokens
-
-                if method == "vllm":
-                    if max_workers is not None:
-                        generate_kwargs["max_workers"] = max_workers
-                    if max_retries is not None:
-                        generate_kwargs["max_retries"] = max_retries
-
-                results = model.generate(batch, **generate_kwargs)
-                all_results.extend(results)
-
-            # Save merged output for all pages
-            save_merged_output(
-                output_path,
-                file_path.name,
-                all_results,
-                save_images=include_images,
-                save_html=save_html,
-                paginate_output=paginate_output,
-            )
-
-            click.echo(f"  Completed: {file_path.name}")
-
-        except Exception as e:
-            click.echo(f"  Error processing {file_path.name}: {e}", err=True)
-            continue
-
-    click.echo(f"\nProcessing complete. Results saved to: {output_path}")
+    if failures:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -65,29 +65,23 @@ def scale_to_fit(
     return img.resize((new_width, new_height), resample=resample_method)
 
 
-def detect_repeat_token(
+def _detect_repeat_at(
     predicted_tokens: str,
-    base_max_repeats: int = 4,
-    window_size: int = 500,
-    cut_from_end: int = 0,
-    scaling_factor: float = 3.0,
-):
-    if cut_from_end > 0:
-        predicted_tokens = predicted_tokens[:-cut_from_end]
-
+    base_max_repeats: int,
+    window_size: int,
+    scaling_factor: float,
+) -> bool:
+    """Return True if the tail of ``predicted_tokens`` is a degenerate repeat."""
+    n = len(predicted_tokens)
     for seq_len in range(1, window_size // 2 + 1):
-        # Extract the potential repeating sequence from the end
+        if seq_len > n:
+            break
         candidate_seq = predicted_tokens[-seq_len:]
-
-        # Inverse scaling: shorter sequences need more repeats
+        # Inverse scaling: shorter sequences need more repeats.
         max_repeats = int(base_max_repeats * (1 + scaling_factor / seq_len))
 
-        # Count how many times this sequence appears consecutively at the end
         repeat_count = 0
-        pos = len(predicted_tokens) - seq_len
-        if pos < 0:
-            continue
-
+        pos = n - seq_len
         while pos >= 0:
             if predicted_tokens[pos : pos + seq_len] == candidate_seq:
                 repeat_count += 1
@@ -97,5 +91,43 @@ def detect_repeat_token(
 
         if repeat_count > max_repeats:
             return True
+    return False
+
+
+def detect_repeat_token(
+    predicted_tokens: str,
+    base_max_repeats: int = 4,
+    window_size: int = 500,
+    cut_from_end: int = 0,
+    scaling_factor: float = 3.0,
+    also_check_trim: int = 50,
+) -> bool:
+    """Detect a degenerate trailing-repeat in the model output.
+
+    Performs a single scan of the literal tail and (if the string is long
+    enough) of the tail with the last ``also_check_trim`` characters removed.
+    Replaces the previous pattern of calling this function twice.
+    """
+    if cut_from_end > 0:
+        # Backwards-compatible explicit-trim path.
+        return _detect_repeat_at(
+            predicted_tokens[:-cut_from_end],
+            base_max_repeats,
+            window_size,
+            scaling_factor,
+        )
+
+    if _detect_repeat_at(
+        predicted_tokens, base_max_repeats, window_size, scaling_factor
+    ):
+        return True
+
+    if also_check_trim and len(predicted_tokens) > also_check_trim:
+        return _detect_repeat_at(
+            predicted_tokens[:-also_check_trim],
+            base_max_repeats,
+            window_size,
+            scaling_factor,
+        )
 
     return False

@@ -53,7 +53,7 @@ def embed_images_in_markdown(markdown: str, images: dict) -> str:
 def ocr_layout(
     img: Image.Image,
     model=None,
-) -> (Image.Image, str):
+) -> tuple[Image.Image, str]:
     batch = BatchInputItem(
         image=img,
         prompt_type="ocr_layout",

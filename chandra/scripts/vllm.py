@@ -1,13 +1,19 @@
+from __future__ import annotations
+
 import argparse
 import json
+import logging
 import math
 import os
+import shutil
 import subprocess
 import sys
 
 from chandra.settings import settings
 
-# H100 80GB is the baseline for scaling
+logger = logging.getLogger(__name__)
+
+# H100 80GB is the baseline for scaling.
 BASELINE_VRAM_GB = 80
 BASELINE_MAX_BATCHED_TOKENS = 8192
 BASELINE_MAX_NUM_SEQS = 64
@@ -26,55 +32,80 @@ GPU_VRAM_GB = {
 }
 
 
-def get_gpu_settings(gpu: str):
+def get_gpu_settings(gpu: str) -> tuple[int, int]:
+    """Return (max_batched_tokens, max_num_seqs) for the given GPU type."""
     vram = GPU_VRAM_GB.get(gpu)
     if vram is None:
         available = ", ".join(sorted(GPU_VRAM_GB.keys()))
-        print(f"Unknown GPU '{gpu}'. Available: {available}")
-        sys.exit(1)
+        raise SystemExit(f"Unknown GPU '{gpu}'. Available: {available}")
 
     ratio = vram / BASELINE_VRAM_GB
-    # Scale and round down to nearest power of 2 for batched tokens
     raw_tokens = BASELINE_MAX_BATCHED_TOKENS * ratio
     max_batched_tokens = max(1024, 2 ** math.floor(math.log2(raw_tokens)))
-    # Scale and round down to nearest multiple of 8 for seqs
     max_num_seqs = max(8, (int(BASELINE_MAX_NUM_SEQS * ratio) // 8) * 8)
-
     return max_batched_tokens, max_num_seqs
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Launch vLLM server for Chandra")
-    parser.add_argument(
-        "--gpu",
-        default="h100",
-        choices=sorted(GPU_VRAM_GB.keys()),
-        help="GPU type for optimal settings (default: h100)",
-    )
-    parser.add_argument(
-        "--mtp",
-        action="store_true",
-        default=False,
-        help="Enable MTP speculative decoding (disabled by default, unstable with vLLM)",
-    )
-    args = parser.parse_args()
+def docker_invocation(docker_bin: str = "docker") -> list[str]:
+    """Return the command prefix for running docker.
 
-    max_batched_tokens, max_num_seqs = get_gpu_settings(args.gpu)
+    Tries ``<docker_bin> info`` without sudo first; if that fails AND ``sudo``
+    is available, prepends sudo. This avoids the previous hardcoded ``sudo``
+    that broke on Docker Desktop, rootless docker, and any setup with the
+    user in the ``docker`` group.
+    """
+    if shutil.which(docker_bin) is None:
+        raise SystemExit(
+            f"docker binary {docker_bin!r} not found on PATH; "
+            "install Docker / Docker Desktop or pass --docker-bin"
+        )
 
-    cmd = [
-        "sudo",
-        "docker",
+    # If `docker info` works without sudo, we don't need it.
+    try:
+        result = subprocess.run(
+            [docker_bin, "info"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        result = None
+
+    if result is not None and result.returncode == 0:
+        return [docker_bin]
+
+    # Fall back to sudo if available.
+    if shutil.which("sudo") is not None:
+        logger.info("docker requires elevated privileges; using sudo")
+        return ["sudo", docker_bin]
+
+    # No sudo — return docker_bin and let the actual run fail with a
+    # platform-appropriate error (Docker Desktop typically does not need sudo).
+    return [docker_bin]
+
+
+def build_command(
+    args: argparse.Namespace,
+    max_batched_tokens: int,
+    max_num_seqs: int,
+) -> list[str]:
+    cmd = docker_invocation(args.docker_bin)
+    cmd += [
         "run",
-        "--runtime",
-        "nvidia",
+        "--rm",
+    ]
+    if args.gpu_runtime:
+        cmd += ["--runtime", args.gpu_runtime]
+    cmd += [
         "--gpus",
         f"device={settings.VLLM_GPUS}",
         "-v",
         f"{os.path.expanduser('~')}/.cache/huggingface:/root/.cache/huggingface",
         "-p",
-        "8000:8000",
+        f"{args.port}:8000",
         "--ipc=host",
-        "vllm/vllm-openai:v0.17.0",
+        args.image,
         "--model",
         settings.MODEL_CHECKPOINT,
         "--no-enforce-eager",
@@ -94,24 +125,81 @@ def main():
         "--served-model-name",
         settings.VLLM_MODEL_NAME,
     ]
-
     if args.mtp:
         spec_config = json.dumps({"method": "mtp", "num_speculative_tokens": 1})
         cmd.extend(["--speculative-config", spec_config])
+    return cmd
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Launch vLLM server for Chandra")
+    parser.add_argument(
+        "--gpu",
+        default="h100",
+        choices=sorted(GPU_VRAM_GB.keys()),
+        help="GPU type for optimal settings (default: h100)",
+    )
+    parser.add_argument(
+        "--mtp",
+        action="store_true",
+        default=False,
+        help="Enable MTP speculative decoding (disabled by default, unstable with vLLM)",
+    )
+    parser.add_argument(
+        "--docker-bin",
+        default="docker",
+        help="Docker binary name or path (default: docker)",
+    )
+    parser.add_argument(
+        "--gpu-runtime",
+        default="nvidia",
+        help="Container GPU runtime (default: nvidia; pass empty to omit --runtime)",
+    )
+    parser.add_argument(
+        "--image",
+        default="vllm/vllm-openai:v0.17.0",
+        help="Docker image to run (default: vllm/vllm-openai:v0.17.0)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Host port to publish (default: 8000)",
+    )
+    parser.add_argument(
+        "--print-only",
+        action="store_true",
+        help="Print the docker command and exit (no docker invocation)",
+    )
+    return parser.parse_args(argv)
+
+
+def main():
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    args = parse_args()
+    max_batched_tokens, max_num_seqs = get_gpu_settings(args.gpu)
+    cmd = build_command(args, max_batched_tokens, max_num_seqs)
 
     vram = GPU_VRAM_GB[args.gpu]
-    print(f"GPU: {args.gpu} ({vram}GB VRAM)")
-    print(f"max-num-batched-tokens: {max_batched_tokens}, max-num-seqs: {max_num_seqs}")
-    print(f"MTP: {'enabled' if args.mtp else 'disabled'}")
-    print(f"Command: {' '.join(cmd)}")
+    logger.info("GPU: %s (%dGB VRAM)", args.gpu, vram)
+    logger.info(
+        "max-num-batched-tokens: %d, max-num-seqs: %d",
+        max_batched_tokens,
+        max_num_seqs,
+    )
+    logger.info("MTP: %s", "enabled" if args.mtp else "disabled")
+    logger.info("Command: %s", " ".join(cmd))
+
+    if args.print_only:
+        return
 
     try:
         subprocess.run(cmd, check=True)
     except KeyboardInterrupt:
-        print("\nShutting down vLLM server...")
+        logger.info("Shutting down vLLM server...")
         sys.exit(0)
     except subprocess.CalledProcessError as e:
-        print(f"\nvLLM server exited with error code {e.returncode}")
+        logger.error("vLLM server exited with error code %d", e.returncode)
         sys.exit(e.returncode)
 
 

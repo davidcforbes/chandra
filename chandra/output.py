@@ -1,19 +1,94 @@
 import hashlib
+import logging
 import re
 from dataclasses import dataclass, asdict
-from functools import lru_cache
 
-import six
+import bleach
+from bleach.css_sanitizer import CSSSanitizer
 from PIL import Image
 from bs4 import BeautifulSoup
 from markdownify import MarkdownConverter, re_whitespace
 
+from chandra.prompts import ALLOWED_ATTRIBUTES, ALLOWED_TAGS
 from chandra.settings import settings
 
+logger = logging.getLogger(__name__)
 
-@lru_cache
-def _hash_html(html: str):
-    return hashlib.md5(html.encode("utf-8")).hexdigest()
+# Tags retained for the layout/structural pass. The model is prompted to use
+# `<div>` as the layout-block wrapper; that tag is structural and must survive
+# the allowlist even though the prompt lists only inline/document tags.
+_SANITIZE_TAGS = frozenset(list(ALLOWED_TAGS) + ["div"])
+# `src` isn't in the prompt allowlist (the prompt says "do not fill src"), but
+# downstream parse_html injects a generated src on image blocks and downstream
+# consumers expect it to survive. Allow it per-tag where it makes sense; bleach
+# still enforces the protocol allowlist below.
+_SANITIZE_ATTRIBUTES = {
+    "*": list(ALLOWED_ATTRIBUTES),
+    "img": list(ALLOWED_ATTRIBUTES) + ["src"],
+    "a": list(ALLOWED_ATTRIBUTES) + ["src"],
+}
+
+
+# Tags whose entire content (not just the tag) must be removed so attacker
+# payloads cannot survive as bare text after sanitization.
+_DECOMPOSE_TAGS = ("script", "style", "iframe", "object", "embed", "noscript")
+
+# Conservative CSS allowlist — text styling only, no `position`, `background`,
+# `url(...)`, etc. that could exfiltrate data or break out of containers.
+_SAFE_CSS_PROPERTIES = frozenset(
+    {
+        "color",
+        "background-color",
+        "font-size",
+        "font-weight",
+        "font-style",
+        "font-family",
+        "text-align",
+        "text-decoration",
+        "line-height",
+        "padding",
+        "margin",
+        "border",
+        "border-color",
+        "border-style",
+        "border-width",
+        "white-space",
+        "vertical-align",
+    }
+)
+_CSS_SANITIZER = CSSSanitizer(allowed_css_properties=sorted(_SAFE_CSS_PROPERTIES))
+
+
+def sanitize_html(html: str) -> str:
+    """Strip tags/attributes outside the prompt allowlist.
+
+    Defends viewers (Streamlit, Flask, downstream consumers) against a
+    misbehaving model emitting `<script>`, `<iframe>`, or `on*` event handlers.
+    """
+    if not html:
+        return html
+
+    # Bleach's `strip=True` removes the tag but keeps inner text — so
+    # `<script>alert(1)</script>` becomes the literal string `alert(1)`. For
+    # script/style/iframe/etc. that residual text is itself a payload, so we
+    # decompose those nodes (tag + content) before handing off to bleach.
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup.find_all(_DECOMPOSE_TAGS):
+        tag.decompose()
+
+    return bleach.clean(
+        str(soup),
+        tags=_SANITIZE_TAGS,
+        attributes=_SANITIZE_ATTRIBUTES,
+        css_sanitizer=_CSS_SANITIZER,
+        protocols=["http", "https", "data", "mailto"],
+        strip=True,
+        strip_comments=True,
+    )
+
+
+def _hash_html(html: str) -> str:
+    return hashlib.md5(html.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def get_image_name(html: str, div_idx: int):
@@ -44,6 +119,7 @@ def extract_images(html: str, chunks: dict, image: Image.Image):
 def parse_html(
     html: str, include_headers_footers: bool = False, include_images: bool = True
 ):
+    html = sanitize_html(html)
     soup = BeautifulSoup(html, "html.parser")
     top_level_divs = soup.find_all("div", recursive=False)
     out_html = ""
@@ -143,7 +219,7 @@ class Markdownify(MarkdownConverter):
         return text
 
     def process_text(self, el, parent_tags=None):
-        text = six.text_type(el) or ""
+        text = str(el) or ""
 
         # normalize whitespace if we're not inside a preformatted element
         if not el.find_parent("pre"):
@@ -183,8 +259,8 @@ def parse_markdown(
     )
     try:
         markdown = md_cls.convert(html)
-    except Exception as e:
-        print(f"Error converting HTML to Markdown: {e}")
+    except Exception:
+        logger.exception("Error converting HTML to Markdown")
         markdown = ""
     return markdown.strip()
 
@@ -197,6 +273,7 @@ class LayoutBlock:
 
 
 def parse_layout(html: str, image: Image.Image, bbox_scale=settings.BBOX_SCALE):
+    html = sanitize_html(html)
     soup = BeautifulSoup(html, "html.parser")
     top_level_divs = soup.find_all("div", recursive=False)
     width, height = image.size
@@ -208,15 +285,20 @@ def parse_layout(html: str, image: Image.Image, bbox_scale=settings.BBOX_SCALE):
         if label == "Blank-Page":
             continue
 
-        bbox = div.get("data-bbox")
+        raw_bbox = div.get("data-bbox")
 
         try:
-            bbox = bbox.split(" ")
-            bbox = list(map(int, bbox))
-            assert len(bbox) == 4, "Invalid bbox length"
-        except Exception:
-            print(f"Invalid bbox format: {bbox}, defaulting to full image")
-            bbox = [0, 0, 1, 1]
+            bbox_parts = raw_bbox.split(" ")
+            bbox = list(map(int, bbox_parts))
+            if len(bbox) != 4:
+                raise ValueError(f"expected 4 ints, got {len(bbox)}")
+        except (AttributeError, ValueError, TypeError) as exc:
+            # Fall back to the full page so downstream cropping/drawing remains
+            # meaningful instead of producing a 1×1-pixel artifact.
+            logger.warning(
+                "Invalid bbox %r (%s); falling back to full image", raw_bbox, exc
+            )
+            bbox = [0, 0, bbox_scale, bbox_scale]
 
         # Normalize bbox
         bbox = [
