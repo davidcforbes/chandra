@@ -225,6 +225,26 @@ class TestExtractImages:
         images = extract_images("<div></div>", chunks, image)
         assert images == {}
 
+    def test_image_filenames_match_parse_html_refs(self):
+        # Regression (chandra-3gu): when sanitize_html was added to parse_html,
+        # the local html was reassigned before hashing. extract_images still
+        # hashed the raw input, so md/HTML refs pointed at filenames that
+        # never existed on disk. The script tag here gets decomposed by
+        # sanitize_html, so raw vs sanitized hashes diverge.
+        import re
+
+        image = Image.new("RGB", (200, 200), "white")
+        html = (
+            '<div data-label="Image" data-bbox="0 0 1000 1000"><img alt="a"/></div>'
+            "<script>alert(1)</script>"
+        )
+        rendered = parse_html(html)
+        chunks = parse_chunks(html, image)
+        images = extract_images(html, chunks, image)
+        md_refs = set(re.findall(r'src="([^"]+\.webp)"', rendered))
+        disk_names = set(images.keys())
+        assert md_refs == disk_names
+
 
 # ---------- parse_markdown ----------
 

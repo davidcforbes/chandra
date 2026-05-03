@@ -97,6 +97,8 @@ def get_image_name(html: str, div_idx: int):
 
 
 def extract_images(html: str, chunks: dict, image: Image.Image):
+    # Hash the same string parse_html does so disk filenames match md/HTML refs.
+    html = sanitize_html(html)
     images = {}
     div_idx = 0
     for idx, chunk in enumerate(chunks):
