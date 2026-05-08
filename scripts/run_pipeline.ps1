@@ -32,7 +32,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $DockerDesktopExe = 'C:\Program Files\Docker\Docker\Docker Desktop.exe'
-$BatchOcrPy       = Join-Path $env:TEMP 'chandra-smoke\batch_ocr.py'
+$BatchOcrPy       = Join-Path $PSScriptRoot 'batch_ocr.py'
 $ChandraVenvPy    = 'C:\dev\chandra\.venv\Scripts\python.exe'
 $VllmHealthUrl    = "http://localhost:$Port/v1/models"
 
