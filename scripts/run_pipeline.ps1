@@ -1,17 +1,29 @@
 <#
 .SYNOPSIS
-    Unified launcher: Docker Desktop -> chandra vLLM -> batch_ocr.py
+    Unified launcher: Docker Desktop -> chandra vLLM -> chandra page-worker pipeline
 
 .DESCRIPTION
     1. Starts Docker Desktop if it isn't running and waits for the daemon.
     2. Starts the chandra vLLM container (tuned for 16 GB mobile RTX 4090)
        unless one is already serving on http://localhost:8000.
     3. Waits for /v1/models to return 200.
-    4. Invokes the existing batch_ocr.py from %TEMP%\chandra-smoke, which
-       walks ~\Documents\Book and skips PDFs whose .md is already present.
+    4. Invokes the chandra CLI on -BookDir, which discovers all supported
+       files (recursively), runs them through the page-worker pipeline,
+       and writes per-book canonical artifacts (.md/.html/_metadata.json/
+       chunks.jsonl) plus extracted images. Resume is automatic.
 
     The vLLM container is left running on exit so a re-run can skip the
     ~3-minute model load. Stop it manually with `docker stop chandra-vllm`.
+
+.PARAMETER BookDir
+    Folder of source PDFs/images. Defaults to ~/Documents/Book.
+
+.PARAMETER OutDir
+    Where to write per-book output subdirs. Defaults to BookDir (so
+    book.pdf produces book/book.md alongside it).
+
+.PARAMETER Workers
+    Outer page-pool size handed to chandra. Default 8.
 
 .NOTES
     Tuned config (see chandra-3qu / earlier session):
@@ -26,14 +38,16 @@ param(
     [string]$ContainerName      = 'chandra-vllm',
     [string]$VllmImage          = 'vllm/vllm-openai:v0.17.0',
     [string]$Model              = 'datalab-to/chandra-ocr-2',
-    [int]$Port                  = 8000
+    [int]$Port                  = 8000,
+    [string]$BookDir            = (Join-Path $env:USERPROFILE 'Documents\Book'),
+    [string]$OutDir             = (Join-Path $env:USERPROFILE 'Documents\Book'),
+    [int]$Workers               = 8
 )
 
 $ErrorActionPreference = 'Stop'
 
 $DockerDesktopExe = 'C:\Program Files\Docker\Docker\Docker Desktop.exe'
-$BatchOcrPy       = Join-Path $PSScriptRoot 'batch_ocr.py'
-$ChandraVenvPy    = 'C:\dev\chandra\.venv\Scripts\python.exe'
+$ChandraExe       = 'C:\dev\chandra\.venv\Scripts\chandra.exe'
 $VllmHealthUrl    = "http://localhost:$Port/v1/models"
 
 function Write-Step  ($m) { Write-Host "==> $m" -ForegroundColor Cyan }
@@ -56,11 +70,15 @@ function Test-VllmReady {
 }
 
 # --- preflight checks ---------------------------------------------------
-foreach ($p in @($BatchOcrPy, $ChandraVenvPy, $DockerDesktopExe)) {
+foreach ($p in @($ChandraExe, $DockerDesktopExe)) {
     if (-not (Test-Path $p)) {
         Write-Err "missing required path: $p"
         exit 2
     }
+}
+if (-not (Test-Path $BookDir)) {
+    Write-Err "BookDir does not exist: $BookDir"
+    exit 2
 }
 
 # --- step 1: docker desktop ---------------------------------------------
@@ -161,16 +179,19 @@ if (Test-VllmReady) {
     Write-Ok 'vLLM ready'
 }
 
-# --- step 3: batch OCR --------------------------------------------------
-Write-Step "Running batch_ocr.py"
-& $ChandraVenvPy $BatchOcrPy
+# --- step 3: chandra pipeline -------------------------------------------
+Write-Step "Running chandra pipeline"
+Write-Host "    input  : $BookDir"
+Write-Host "    output : $OutDir"
+Write-Host "    workers: $Workers"
+& $ChandraExe $BookDir $OutDir --recursive --workers $Workers --method vllm
 $rc = $LASTEXITCODE
 
 Write-Host ''
 if ($rc -eq 0) {
-    Write-Ok 'batch finished cleanly'
+    Write-Ok 'pipeline finished cleanly'
 } else {
-    Write-Warn2 "batch_ocr.py exited with code $rc"
+    Write-Warn2 "chandra exited with code $rc"
 }
 
 Write-Host ''
