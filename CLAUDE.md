@@ -36,7 +36,7 @@ uv run pytest tests/integration
 TORCH_ATTN=sdpa uv run pytest tests/integration   # CI uses sdpa attention
 ```
 
-Coverage on the modules with unit tests (`input`, `output`, `model.vllm`, `model.util`, `scripts.cli`, `scripts.screenshot_app`, `scripts.vllm`, `settings`) is ~92%. New behavior should ship with unit tests — most logic in this repo is testable without a GPU because the OpenAI client and PIL/pypdfium2 are easy to mock or use directly with synthetic inputs.
+Coverage spans `input`, `output`, `model.vllm`, `model.util`, `manifest`, `pipeline`, `scripts.cli`, `scripts.screenshot_app`, `scripts.vllm`, and `settings`. New behavior should ship with unit tests — most logic in this repo is testable without a GPU because the OpenAI client, PIL, and pypdfium2 are easy to mock, and `pipeline.run_pipeline` accepts an injected `model` so the worker pool itself unit-tests against a mocked `InferenceManager`.
 
 CLI entry points (defined in `pyproject.toml [project.scripts]`):
 
@@ -53,7 +53,38 @@ uv run pre-commit run --all-files
 
 ## Architecture
 
-The pipeline is **input → model inference → output parsing**, orchestrated by `InferenceManager` in `chandra/model/__init__.py`.
+The pipeline is **discover → enqueue pages → parallel OCR workers → per-book assembler**, with the model layer at the worker step. `chandra/pipeline.py` owns the orchestration; `chandra/model/__init__.py` (the `InferenceManager`) is just one step inside a worker.
+
+### Page-worker pipeline (`chandra/pipeline.py`)
+
+The CLI is a thin shell that runs `discover_books(input_path, output_root, recursive, page_range)` then `run_pipeline(books, model, n_workers, ...)`.
+
+- **`BookSpec`** carries `source_path`, `stem`, `stem_dir`, `total_pages`, `expected_pages` (what we plan to OCR — full file or `--page-range` subset), and `pending_pages` (`expected_pages` minus what's already on disk from a prior interrupted run).
+- **Producer** (single thread) renders only the pending pages from each book via `iter_file_pages` and pushes `(book, page_num, image)` onto a bounded queue (size = `max(2*n_workers, 16)`). Backpressure keeps memory bounded.
+- **Workers** (default 8 for vllm, 1 for hf) pull from the queue, call `model.generate([item])` with `BatchInputItem.file_stem` and `.page_num` set so chunks come back with stable global IDs, save image crops directly to `<stem_dir>/<hash>_<idx>_img.webp`, then atomically write the per-page artifact to `<stem_dir>/.partial/pages/NNNN.json` (tmp + rename — readers never see partials). Per-page exceptions are caught and recorded as `error: True` in the artifact so a single bad page doesn't kill the book.
+- **Assembler** (single thread) polls each book's `.partial/` and runs `manifest.assemble_book` when `read_partial_state(stem_dir) == set(expected_pages)`. Two-phase commit: write all canonical artifacts (`<stem>.md`, `<stem>.html`, `<stem>_metadata.json`, `chunks.jsonl`) to `.tmp` siblings via `os.replace`, then `shutil.rmtree(.partial/)`.
+
+### State on disk
+
+```
+<output_root>/
+  <stem>/
+    .partial/                  ← present only while in-flight
+      _state.json              ← {source: {path,size,mtime}, expected_pages: [...]}
+      pages/
+        0042.json              ← per-page artifact (atomic; readers never see partials)
+    <stem>.md                  ← canonical merged outputs
+    <stem>.html
+    <stem>_metadata.json
+    chunks.jsonl               ← one JSON per line, per chunk, with stable IDs
+    <hash>_<idx>_img.webp      ← extracted images (hash deterministic)
+```
+
+Resume detection on startup: canonical `<stem>.md` present → skip; `.partial/` present + source PDF mtime+size unchanged → resume on remaining pages; `.partial/` present but source mismatched → purge and start fresh.
+
+### Stable chunk IDs
+
+`parse_chunks(html, image, file_stem=..., page_num=...)` (`chandra/output.py`) emits chunks with `chunk_id` of the form `"<safe-stem>/<page:04d>/<idx:03d>"` — stem characters outside `[A-Za-z0-9_-]` collapse to `-`. Each chunk also carries `page` and `image_ref` (the `.webp` filename for Image/Figure chunks). These IDs survive in URLs, filesystem paths, and graph databases unchanged. Legacy callers that omit `file_stem`/`page_num` get `"_/NNN"` IDs — still unique within a page, just not globally.
 
 ### Two inference backends, one interface
 
@@ -86,7 +117,7 @@ When changing prompt labels, allowed tags, or bbox encoding, update both `prompt
 
 `chandra/input.py` has two parallel APIs:
 
-- **Streaming** (preferred for large docs): `iter_pdf_pages` and `iter_file_pages` yield rendered PIL pages one at a time so peak memory is bounded by `batch_size` instead of the full PDF. `count_file_pages` reports the page count without rendering. The CLI uses these via the `_chunked` helper.
+- **Streaming** (preferred for large docs): `iter_pdf_pages` and `iter_file_pages` yield rendered PIL pages one at a time so peak memory is bounded by the work-queue size, not the full PDF. `count_file_pages` reports the page count without rendering. `chandra/pipeline.py::_producer` consumes these directly.
 - **Eager**: `load_pdf_images` / `load_file` are thin `list(...)` wrappers retained for backwards compatibility.
 
 `parse_range_str` is the **1-indexed → 0-indexed** boundary. CLI users say `--page-range 1-5,7` (1-indexed, the natural way humans count pages); this function returns `[0, 1, 2, 3, 4, 6]` (0-indexed pdfium indices). It also validates: empty, malformed, reversed, ≤ 0 → `ValueError` with a clear message. Code that calls `iter_pdf_pages` directly (e.g., `app.py`, `screenshot_app.py`) bypasses the conversion and must pass 0-indexed indices itself.
@@ -109,11 +140,28 @@ All config lives in `chandra/settings.py` (pydantic-settings). `_resolve_env_fil
 
 `chandra/scripts/screenshot_app.py` accepts files via `multipart/form-data` (field `file`) and never reads server-side `file_path` from the request. Binds **127.0.0.1** by default (override with `--host 0.0.0.0`). `get_model()` uses double-checked locking so concurrent first-requests don't construct two `InferenceManager`s.
 
-## CLI batching behavior
+## CLI surface
 
-`chandra/scripts/cli.py` defaults differ by method: `--batch-size` defaults to **28 for vllm** and **1 for hf** (HF inference is single-image at a time). The CLI streams pages through `iter_file_pages` and processes them in `_chunked` batches — peak memory is `batch_size`, not `pdf_pages`.
+```bash
+chandra <input> <output>              # single file, folder, or "folder/*.pdf" glob
+chandra books/ out/ --recursive       # walk subfolders too
+chandra books/ out/ --workers 8       # tune the page-worker pool
+chandra book.pdf out/ --page-range 1-50
+```
 
-Notable flags: `--version`, `--log-level`, `--paginate-output` (legacy `--paginate_output` kept as hidden alias), `--fail-fast`. The CLI **exits 1 if any file fails** (was previously always 0). Each input file gets its own subdirectory in the output containing `<name>.md`, `<name>.html`, `<name>_metadata.json`, plus extracted images saved as `.webp` keyed by an MD5 hash of the raw HTML (see `get_image_name` in `output.py`).
+`--workers` defaults to **8 for vllm** and **1 for hf**. The pipeline processes pages individually so there is no application-level batching anymore. Re-running the same command resumes interrupted books and skips fully-assembled ones — no separate orchestrator script needed.
+
+Deprecated flags (still accepted, warn once): `--batch-size`, `--max-workers` (aliased to `--workers`), `--fail-fast` (per-page errors are recorded in `metadata.json` instead of aborting). Active flags: `--method`, `--recursive`, `--workers`, `--page-range`, `--max-output-tokens`, `--max-retries`, `--include-images/--no-images`, `--include-headers-footers/--no-headers-footers`, `--save-html/--no-html`, `--paginate-output` (legacy `--paginate_output` alias), `--log-every`, `--log-level`.
+
+Exit code: **0** on clean success; **1** if any pages still pending (producer failure) or any pages tagged with `error: True`; **130** on `KeyboardInterrupt` (partial state preserved on disk for next run).
+
+Each input file gets its own subdirectory in the output containing `<name>.md`, `<name>.html`, `<name>_metadata.json`, `chunks.jsonl`, plus extracted images saved as `.webp` keyed by an MD5 hash of the raw HTML (see `get_image_name` in `output.py`). The `chunks.jsonl` file is one JSON per line — `{chunk_id, page, label, bbox, content, image_ref}` — and is the canonical artifact for downstream graph indexing.
+
+### Launcher
+
+`scripts/run_pipeline.ps1` brings up Docker Desktop + the chandra vLLM container (tuned for the 16 GB mobile RTX 4090 — `--max-num-seqs 16`, `--max-num-batched-tokens 2048`, `--gpu-memory-utilization .88`) and then invokes `chandra <BookDir> <OutDir> --recursive --workers 8`. Override `-BookDir`, `-OutDir`, `-Workers` via parameters. The vLLM container is left running between runs so the ~3-minute model load isn't repeated.
+
+`scripts/gen_toc.py` is a standalone post-processing tool that rewrites the printed-TOC region of an assembled `.md` with a navigable bullet TOC. The fix in commit `fe20aa2` made it bail safely when no terminator H1 follows `# Table of Contents` (the previous bug destroyed the body of any document without an explicit `# Preface`).
 
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:3216161c -->
