@@ -17,10 +17,14 @@ Crash semantics:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 # ---------- atomic write helpers ------------------------------------------
@@ -123,11 +127,39 @@ def source_matches(stem_dir: Path, source_pdf: Path) -> bool:
     return src["size"] == stat.st_size and abs(src["mtime"] - stat.st_mtime) < 1.0
 
 
+_PURGE_RETRY_DELAYS = (0, 0.1, 0.25, 0.5, 1.0, 2.0)
+
+
 def purge_partial(stem_dir: Path) -> None:
-    """Wipe ``.partial/`` — used when source PDF has changed under us."""
+    """Wipe ``.partial/`` with retries on transient Windows lock errors.
+
+    On Windows, ``shutil.rmtree`` of a freshly-written directory frequently
+    fails with ``WinError 5`` (access denied) or ``WinError 32`` (sharing
+    violation) because antivirus, Search Indexer, or the parent process
+    briefly holds a handle on a just-created file or directory. The
+    handles release within seconds; we retry with exponential-ish backoff
+    rather than failing assembly. Final fallback: log a warning and leave
+    ``.partial/`` in place — the book's canonical artifacts are already
+    committed, so the next run can clean it up via the source-fingerprint
+    purge path."""
     p = partial_dir(stem_dir)
-    if p.exists():
-        shutil.rmtree(p)
+    if not p.exists():
+        return
+    last_exc: Exception | None = None
+    for delay in _PURGE_RETRY_DELAYS:
+        if delay:
+            time.sleep(delay)
+        try:
+            shutil.rmtree(p)
+            return
+        except (PermissionError, OSError) as exc:
+            last_exc = exc
+    logger.warning(
+        "purge_partial gave up after retries on %s: %s; "
+        "canonical artifacts are committed, .partial/ left for cleanup",
+        p,
+        last_exc,
+    )
 
 
 # ---------- assembler -----------------------------------------------------

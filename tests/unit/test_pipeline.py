@@ -85,6 +85,66 @@ class TestFindFiles:
         assert len(files) == 1
         assert files[0].suffix == ".PDF"
 
+    def test_skips_chandra_output_subdir_with_md(self, tmp_path: Path):
+        # Regression for chandra-xqk: a recursive walk must NOT descend into
+        # a previously-OCR'd <stem>/ subdir (which contains <stem>.md plus
+        # extracted <hash>_idx_img.webp files). Otherwise every webp gets
+        # treated as a new "book" and hundreds of bogus output dirs appear.
+        (tmp_path / "real_book.pdf").write_bytes(b"x")
+
+        # Simulate a prior chandra output: <stem>/<stem>.md + extracted webp.
+        prior = tmp_path / "prior_book"
+        prior.mkdir()
+        (prior / "prior_book.md").write_text("body")
+        (prior / "abc123_1_img.webp").write_bytes(b"\x00")
+        (prior / "abc123_2_img.webp").write_bytes(b"\x00")
+
+        files = pipeline._walk_supported(tmp_path, recursive=True)
+        names = sorted(f.name for f in files)
+        # Only the real source PDF — none of the extracted webps inside
+        # prior_book/ should be picked up.
+        assert names == ["real_book.pdf"]
+
+    def test_skips_chandra_output_subdir_with_partial(self, tmp_path: Path):
+        # Mid-OCR output dirs (.partial/ but no canonical .md yet) must also
+        # be pruned. Otherwise resuming would discover the in-flight stem
+        # dirs as new inputs.
+        (tmp_path / "fresh.pdf").write_bytes(b"x")
+
+        partial_book = tmp_path / "interrupted_book"
+        partial_book.mkdir()
+        (partial_book / ".partial").mkdir()
+        (partial_book / "abc123_1_img.webp").write_bytes(b"\x00")
+
+        files = pipeline._walk_supported(tmp_path, recursive=True)
+        names = sorted(f.name for f in files)
+        assert names == ["fresh.pdf"]
+
+    def test_skips_chandra_output_subdir_with_chunks_jsonl(self, tmp_path: Path):
+        # An assembled output where the .md filename was renamed but
+        # chunks.jsonl is still present — also recognized as output.
+        (tmp_path / "fresh.pdf").write_bytes(b"x")
+
+        out_dir = tmp_path / "old_book"
+        out_dir.mkdir()
+        (out_dir / "chunks.jsonl").write_text("{}")
+        (out_dir / "abc_1_img.webp").write_bytes(b"\x00")
+
+        files = pipeline._walk_supported(tmp_path, recursive=True)
+        names = sorted(f.name for f in files)
+        assert names == ["fresh.pdf"]
+
+    def test_recursive_walks_real_subfolders(self, tmp_path: Path):
+        # Sanity check: a non-output subfolder is still walked into.
+        (tmp_path / "a.pdf").write_bytes(b"x")
+        sub = tmp_path / "category"
+        sub.mkdir()
+        (sub / "b.pdf").write_bytes(b"x")
+
+        files = pipeline._walk_supported(tmp_path, recursive=True)
+        names = sorted(f.name for f in files)
+        assert names == ["a.pdf", "b.pdf"]
+
 
 class TestDiscoverBooks:
     def _patch_count(self, monkeypatch, n_pages: int):

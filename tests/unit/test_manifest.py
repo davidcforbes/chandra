@@ -158,6 +158,62 @@ class TestSourceFingerprint:
         purge_partial(stem_dir)
         assert not partial_dir(stem_dir).exists()
 
+    def test_purge_partial_retries_on_transient_permission_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Regression for chandra-xqk: on Windows, freshly-created .partial/
+        # dirs sometimes hit WinError 5 from rmtree because of antivirus or
+        # Search Indexer briefly holding handles. We retry through it.
+        pdf = self._make_pdf(tmp_path)
+        stem_dir = tmp_path / "stem"
+        write_state(stem_dir, pdf, expected_pages=[0])
+
+        from chandra import manifest as mf
+
+        real_rmtree = mf.shutil.rmtree
+        calls = {"n": 0}
+
+        def flaky_rmtree(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise PermissionError("[WinError 5] Access is denied")
+            return real_rmtree(*a, **kw)
+
+        # No real sleeping in the test.
+        monkeypatch.setattr(mf.time, "sleep", lambda *_: None)
+        monkeypatch.setattr(mf.shutil, "rmtree", flaky_rmtree)
+
+        purge_partial(stem_dir)
+        assert calls["n"] == 3
+        assert not partial_dir(stem_dir).exists()
+
+    def test_purge_partial_logs_and_returns_when_exhausted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    ):
+        # If retries don't clear, return without raising — assembly already
+        # wrote the canonical artifacts; .partial/ can be cleaned up on the
+        # next run.
+        pdf = self._make_pdf(tmp_path)
+        stem_dir = tmp_path / "stem"
+        write_state(stem_dir, pdf, expected_pages=[0])
+
+        from chandra import manifest as mf
+
+        monkeypatch.setattr(mf.time, "sleep", lambda *_: None)
+        monkeypatch.setattr(
+            mf.shutil,
+            "rmtree",
+            lambda *a, **kw: (_ for _ in ()).throw(
+                PermissionError("[WinError 5] Access is denied")
+            ),
+        )
+
+        with caplog.at_level("WARNING", logger="chandra.manifest"):
+            purge_partial(stem_dir)
+        assert any("gave up" in r.message for r in caplog.records)
+        # Dir still on disk; that's the documented fallback.
+        assert partial_dir(stem_dir).exists()
+
 
 # ---------- assemble_book ----------------------------------------------
 

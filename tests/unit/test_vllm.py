@@ -292,41 +292,46 @@ class TestGenerateVllm:
         assert url.startswith("data:image/jpeg;base64,")
 
     def test_results_in_input_order_under_out_of_order_completion(self):
-        # Straggler-fix regression test: even when later items complete
-        # before earlier ones, the returned list must still match input
-        # order. We tag each item's response with its index so we can
-        # assert that ordering survived the as_completed reshuffle.
-        import threading
+        # Straggler-fix regression test: when later items complete before
+        # earlier ones, the returned list must still match input order.
+        # Each input gets a distinct prompt so the fake can identify which
+        # input it's serving regardless of which thread races into the
+        # call first — earlier the test relied on a global call counter
+        # which was non-deterministic under threading and produced
+        # mis-tagged responses.
+        import re
+        import time
 
-        # Stagger response times so item 0 finishes last, item 4 finishes
-        # first. With executor.map this still produced the right output
-        # but only after the slow item finished. With submit+as_completed
-        # the fast items return early; we verify the FINAL ordering.
         n = 5
-        delays = [0.20, 0.16, 0.12, 0.08, 0.04]  # item 0 slowest
-        call_count = {"n": 0}
-        lock = threading.Lock()
+        delays = [0.20, 0.16, 0.12, 0.08, 0.04]  # input 0 slowest
 
-        def slow_create(**_):
-            with lock:
-                idx = call_count["n"]
-                call_count["n"] += 1
+        def slow_create(**kwargs):
+            content = kwargs["messages"][0]["content"]
+            text = next(c["text"] for c in content if c["type"] == "text")
+            m = re.search(r"INPUT-(\d+)", text)
+            assert m is not None, f"missing INPUT marker in prompt: {text!r}"
+            idx = int(m.group(1))
             time.sleep(delays[idx])
-            # Embed the input index in the response so the result list can
-            # be checked for ordering.
             return _make_fake_completion(f"<div data-idx='{idx}'>ok</div>", tokens=1)
 
-        import time
+        # Tag each input with its index via the prompt override.
+        batch = [
+            BatchInputItem(
+                image=Image.new("RGB", (50, 50)),
+                prompt=f"INPUT-{i}",
+                prompt_type=None,
+            )
+            for i in range(n)
+        ]
 
         ctx, _ = _patch_client(slow_create)
         with ctx:
-            results = vllm_mod.generate_vllm(
-                _make_batch(n), max_workers=n, max_retries=0
-            )
+            results = vllm_mod.generate_vllm(batch, max_workers=n, max_retries=0)
 
         assert len(results) == n
-        # The Nth result should embed data-idx='N' — proving the list is in
-        # input order even though completion order was reversed.
+        # The Nth result must embed data-idx='N' — proving the list is in
+        # input order even though slow_create was called in arbitrary
+        # thread order and completed in reverse delay order.
         for i, r in enumerate(results):
             assert f"data-idx='{i}'" in r.raw, (
                 f"slot {i} got {r.raw!r}; ordering not preserved"

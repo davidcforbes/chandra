@@ -82,18 +82,61 @@ def discover_books(
     return books
 
 
+def _is_chandra_output_dir(d: Path) -> bool:
+    """True if ``d`` looks like a chandra-produced output subdirectory.
+
+    A typical output dir is ``<output_root>/<stem>/`` containing one or more
+    of: ``<stem>.md``, ``chunks.jsonl``, ``.partial/``. We must NEVER recurse
+    into these — chandra's own extracted ``<hash>_<idx>_img.webp`` files
+    live inside, and ``.webp`` is a valid OCR input format, so a naive
+    recursive walk would treat every extracted image as a new "book" and
+    create bogus output dirs (chandra-xqk).
+    """
+    if not d.is_dir():
+        return False
+    return (
+        (d / f"{d.name}.md").is_file()
+        or (d / "chunks.jsonl").is_file()
+        or (d / ".partial").is_dir()
+    )
+
+
+def _walk_supported(root: Path, recursive: bool) -> list[Path]:
+    """Walk ``root`` for supported source files, pruning chandra output dirs.
+
+    Uses ``os.walk`` so we can edit ``dirnames`` in place to skip whole
+    subtrees. Without this, a recursive walk over a corpus that's been OCR'd
+    before would re-process every extracted image (chandra-xqk).
+    """
+    import os
+
+    out: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        d = Path(dirpath)
+        # Prune chandra output dirs so we don't descend into them.
+        # Mutate dirnames in place — os.walk respects this when topdown=True.
+        dirnames[:] = [sub for sub in dirnames if not _is_chandra_output_dir(d / sub)]
+        for name in filenames:
+            if Path(name).suffix.lower() in SUPPORTED_EXTS:
+                out.append(d / name)
+        if not recursive:
+            break  # only the top level
+    return sorted(out)
+
+
 def _find_files(input_path: Path, recursive: bool) -> list[Path]:
     """Resolve a file, directory, or glob pattern to supported source files.
 
     Glob detection: if any path component contains ``*``, ``?``, or ``[``,
     treat the path as a pattern relative to its longest non-glob prefix.
+    Folder mode (recursive or not) prunes chandra output subdirectories so
+    extracted images aren't re-OCR'd.
     """
     s = str(input_path)
     has_glob = any(c in s for c in "*?[")
 
     if has_glob:
         parts = input_path.parts
-        # Split into static prefix + pattern at the first glob component.
         glob_idx = next(
             (i for i, part in enumerate(parts) if any(c in part for c in "*?[")),
             len(parts),
@@ -112,12 +155,7 @@ def _find_files(input_path: Path, recursive: bool) -> list[Path]:
         return [input_path]
 
     if input_path.is_dir():
-        glob_pattern = "**/*" if recursive else "*"
-        files: set[Path] = set()
-        for ext in SUPPORTED_EXTS:
-            files.update(input_path.glob(f"{glob_pattern}{ext}"))
-            files.update(input_path.glob(f"{glob_pattern}{ext.upper()}"))
-        return sorted(files)
+        return _walk_supported(input_path, recursive=recursive)
 
     raise ValueError(f"Path does not exist: {input_path}")
 
