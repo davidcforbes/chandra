@@ -291,6 +291,49 @@ class TestGenerateVllm:
         url = captured[0]["messages"][0]["content"][0]["image_url"]["url"]
         assert url.startswith("data:image/jpeg;base64,")
 
+    def test_results_in_input_order_under_out_of_order_completion(self):
+        # Straggler-fix regression test: even when later items complete
+        # before earlier ones, the returned list must still match input
+        # order. We tag each item's response with its index so we can
+        # assert that ordering survived the as_completed reshuffle.
+        import threading
+
+        # Stagger response times so item 0 finishes last, item 4 finishes
+        # first. With executor.map this still produced the right output
+        # but only after the slow item finished. With submit+as_completed
+        # the fast items return early; we verify the FINAL ordering.
+        n = 5
+        delays = [0.20, 0.16, 0.12, 0.08, 0.04]  # item 0 slowest
+        call_count = {"n": 0}
+        lock = threading.Lock()
+
+        def slow_create(**_):
+            with lock:
+                idx = call_count["n"]
+                call_count["n"] += 1
+            time.sleep(delays[idx])
+            # Embed the input index in the response so the result list can
+            # be checked for ordering.
+            return _make_fake_completion(
+                f"<div data-idx='{idx}'>ok</div>", tokens=1
+            )
+
+        import time
+
+        ctx, _ = _patch_client(slow_create)
+        with ctx:
+            results = vllm_mod.generate_vllm(
+                _make_batch(n), max_workers=n, max_retries=0
+            )
+
+        assert len(results) == n
+        # The Nth result should embed data-idx='N' — proving the list is in
+        # input order even though completion order was reversed.
+        for i, r in enumerate(results):
+            assert f"data-idx='{i}'" in r.raw, (
+                f"slot {i} got {r.raw!r}; ordering not preserved"
+            )
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

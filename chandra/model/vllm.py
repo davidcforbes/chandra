@@ -5,8 +5,7 @@ import io
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
-from itertools import repeat
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
 
 from PIL import Image
@@ -203,11 +202,22 @@ def generate_vllm(
             retries += 1
         return result
 
+    # Submit + as_completed instead of executor.map: when one item triggers a
+    # retry loop (slow straggler), it no longer holds back the already-finished
+    # futures. We tag each future with its input index and reorder before
+    # returning so the result list still matches input order — that contract
+    # is what InferenceManager relies on.
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        results = list(
-            executor.map(
-                process_item, batch, repeat(max_retries), repeat(max_failure_retries)
-            )
-        )
+        futures = {
+            executor.submit(
+                process_item, item, max_retries, max_failure_retries
+            ): idx
+            for idx, item in enumerate(batch)
+        }
+        completed: list[tuple[int, GenerationResult]] = []
+        for fut in as_completed(futures):
+            completed.append((futures[fut], fut.result()))
+        completed.sort(key=lambda p: p[0])
+        results = [r for _, r in completed]
 
     return results
