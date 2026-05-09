@@ -246,6 +246,88 @@ class TestExtractImages:
         assert md_refs == disk_names
 
 
+# ---------- chunk_id / page_num / image_ref ----------
+
+
+class TestChunkIds:
+    def test_chunks_carry_legacy_fields(self):
+        # Backwards compat: the original three keys still come through.
+        image = Image.new("RGB", (200, 200))
+        html = '<div data-label="Text" data-bbox="0 0 1000 1000"><p>hi</p></div>'
+        chunks = parse_chunks(html, image)
+        assert {"bbox", "label", "content"}.issubset(chunks[0].keys())
+
+    def test_default_chunk_id_is_page_local(self):
+        # No file_stem/page_num -> "_/NNN" form, unique within the page.
+        image = Image.new("RGB", (200, 200))
+        html = (
+            '<div data-label="Text" data-bbox="0 0 1000 1000"><p>a</p></div>'
+            '<div data-label="Text" data-bbox="0 0 1000 1000"><p>b</p></div>'
+        )
+        chunks = parse_chunks(html, image)
+        assert chunks[0]["chunk_id"] == "_/000"
+        assert chunks[1]["chunk_id"] == "_/001"
+        assert chunks[0]["page"] is None
+
+    def test_global_chunk_id_when_stem_and_page_supplied(self):
+        image = Image.new("RGB", (200, 200))
+        html = (
+            '<div data-label="Section-Header" data-bbox="0 0 1000 1000"><h1>A</h1></div>'
+            '<div data-label="Text" data-bbox="0 0 1000 1000"><p>b</p></div>'
+        )
+        chunks = parse_chunks(html, image, file_stem="My Book", page_num=42)
+        assert chunks[0]["chunk_id"] == "My-Book/0042/000"
+        assert chunks[1]["chunk_id"] == "My-Book/0042/001"
+        assert chunks[0]["page"] == 42
+
+    def test_stem_sanitization(self):
+        # Spaces, dots, parentheses, accents, slashes -> hyphens; collapsed.
+        image = Image.new("RGB", (200, 200))
+        html = '<div data-label="Text" data-bbox="0 0 1000 1000"><p>x</p></div>'
+        chunks = parse_chunks(
+            html,
+            image,
+            file_stem="Cybersecurity & Data Science (2nd Ed.)",
+            page_num=1,
+        )
+        # Only word chars and hyphens survive; runs of separators collapse to one.
+        assert chunks[0]["chunk_id"] == "Cybersecurity-Data-Science-2nd-Ed/0001/000"
+
+    def test_id_stable_across_reparse(self):
+        # The stable-ID promise: same input HTML + stem + page = same chunk_ids.
+        image = Image.new("RGB", (200, 200))
+        html = (
+            '<div data-label="Text" data-bbox="0 0 1000 1000"><p>a</p></div>'
+            '<div data-label="Text" data-bbox="0 0 1000 1000"><p>b</p></div>'
+            '<div data-label="Text" data-bbox="0 0 1000 1000"><p>c</p></div>'
+        )
+        first = parse_chunks(html, image, file_stem="book", page_num=7)
+        second = parse_chunks(html, image, file_stem="book", page_num=7)
+        assert [c["chunk_id"] for c in first] == [c["chunk_id"] for c in second]
+        assert [c["chunk_id"] for c in first] == [
+            "book/0007/000",
+            "book/0007/001",
+            "book/0007/002",
+        ]
+
+    def test_image_ref_extracted_for_image_chunk(self):
+        # parse_html injects src on Image divs; parse_chunks should surface that
+        # filename so consumers don't have to reparse content HTML.
+        image = Image.new("RGB", (200, 200), "white")
+        html = (
+            '<div data-label="Image" data-bbox="0 0 1000 1000">'
+            '<img src="abc123_5_img.webp" alt="x"/></div>'
+        )
+        chunks = parse_chunks(html, image)
+        assert chunks[0]["image_ref"] == "abc123_5_img.webp"
+
+    def test_image_ref_none_for_text_chunk(self):
+        image = Image.new("RGB", (200, 200))
+        html = '<div data-label="Text" data-bbox="0 0 1000 1000"><p>just text</p></div>'
+        chunks = parse_chunks(html, image)
+        assert chunks[0]["image_ref"] is None
+
+
 # ---------- parse_markdown ----------
 
 

@@ -323,7 +323,56 @@ def parse_layout(html: str, image: Image.Image, bbox_scale=settings.BBOX_SCALE):
     return layout_blocks
 
 
-def parse_chunks(html: str, image: Image.Image, bbox_scale=settings.BBOX_SCALE):
+_CHUNK_ID_STEM_RE = re.compile(r"[^\w-]+")
+_IMG_SRC_RE = re.compile(r'src="([^"]+\.webp)"')
+
+
+def _format_chunk_id(file_stem: str | None, page_num: int | None, idx: int) -> str:
+    """Stable chunk identifier of the form ``<stem>/<page:04d>/<idx:03d>``.
+
+    Stem characters outside ``[A-Za-z0-9_-]`` are collapsed to ``-`` so the ID
+    survives in URLs, filesystem paths, and graph databases unchanged. When
+    ``file_stem`` or ``page_num`` is ``None`` (the case for callers that don't
+    yet thread these through, e.g. the legacy app.py preview), fall back to a
+    page-local ``_/NNN`` form — still unique within a page, just not globally.
+    """
+    if file_stem is None or page_num is None:
+        return f"_/{idx:03d}"
+    safe = _CHUNK_ID_STEM_RE.sub("-", file_stem).strip("-") or "_"
+    return f"{safe}/{page_num:04d}/{idx:03d}"
+
+
+def _extract_image_ref(content: str) -> str | None:
+    """First ``*.webp`` src referenced inside a chunk's HTML, if any.
+
+    parse_html injects ``src="<md5>_<idx>_img.webp"`` on Image/Figure divs.
+    This pulls that filename back out so chunks can reference their image
+    asset directly without a downstream consumer re-parsing HTML.
+    """
+    m = _IMG_SRC_RE.search(content)
+    return m.group(1) if m else None
+
+
+def parse_chunks(
+    html: str,
+    image: Image.Image,
+    bbox_scale: int = settings.BBOX_SCALE,
+    file_stem: str | None = None,
+    page_num: int | None = None,
+):
+    """Per-block list with stable IDs and image references for graph indexing.
+
+    Each chunk dict has: ``bbox``, ``label``, ``content`` (from LayoutBlock),
+    plus ``chunk_id``, ``page``, and ``image_ref``. Pass ``file_stem`` and
+    ``page_num`` to get globally-stable IDs; omit them for the legacy
+    page-local form.
+    """
     layout = parse_layout(html, image, bbox_scale=bbox_scale)
-    chunks = [asdict(block) for block in layout]
+    chunks: list[dict] = []
+    for idx, block in enumerate(layout):
+        chunk = asdict(block)
+        chunk["page"] = page_num
+        chunk["chunk_id"] = _format_chunk_id(file_stem, page_num, idx)
+        chunk["image_ref"] = _extract_image_ref(block.content)
+        chunks.append(chunk)
     return chunks
