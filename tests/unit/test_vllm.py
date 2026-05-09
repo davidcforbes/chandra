@@ -314,9 +314,7 @@ class TestGenerateVllm:
             time.sleep(delays[idx])
             # Embed the input index in the response so the result list can
             # be checked for ordering.
-            return _make_fake_completion(
-                f"<div data-idx='{idx}'>ok</div>", tokens=1
-            )
+            return _make_fake_completion(f"<div data-idx='{idx}'>ok</div>", tokens=1)
 
         import time
 

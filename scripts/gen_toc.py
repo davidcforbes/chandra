@@ -15,6 +15,7 @@ Usage:
   python gen_toc.py <path-to-md>             # dry run
   python gen_toc.py <path-to-md> --apply     # rewrite in place (a .bak is left)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -105,8 +106,11 @@ def build_toc(headings: list[tuple[int, str]]) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("md_path")
-    ap.add_argument("--apply", action="store_true",
-                    help="Rewrite the file in place; leave a .bak alongside")
+    ap.add_argument(
+        "--apply",
+        action="store_true",
+        help="Rewrite the file in place; leave a .bak alongside",
+    )
     args = ap.parse_args()
 
     md = Path(args.md_path)
@@ -118,13 +122,17 @@ def main() -> int:
 
     region = find_region(lines)
     if region is None:
-        print("no printed-TOC region found "
-              "(missing '# Table of Contents' or no following H1); "
-              "nothing to replace.")
+        print(
+            "no printed-TOC region found "
+            "(missing '# Table of Contents' or no following H1); "
+            "nothing to replace."
+        )
         return 1
     start, end = region
-    print(f"printed-TOC region: lines {start + 1}..{end} "
-          f"({end - start} lines, ~{sum(len(l) for l in lines[start:end]) / 1024:.1f} KB)")
+    print(
+        f"printed-TOC region: lines {start + 1}..{end} "
+        f"({end - start} lines, ~{sum(len(line) for line in lines[start:end]) / 1024:.1f} KB)"
+    )
 
     headings = extract_headings(lines, end)
     print(f"real headings found after TOC: {len(headings)}")
@@ -148,7 +156,7 @@ def main() -> int:
 
     new_lines = lines[:start] + [new_toc] + lines[end:]
     md.write_text("".join(new_lines), encoding="utf-8")
-    print(f"rewrote {md} ({sum(len(l) for l in new_lines)} chars)")
+    print(f"rewrote {md} ({sum(len(line) for line in new_lines)} chars)")
     return 0
 
 

@@ -13,6 +13,7 @@ Crash semantics:
 - A source PDF being modified between runs is detected via mtime+size in
   ``_state.json``; ``.partial/`` is then purged by the caller.
 """
+
 from __future__ import annotations
 
 import json

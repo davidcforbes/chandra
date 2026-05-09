@@ -5,6 +5,7 @@ Entry point for the page-worker pipeline. Accepts a single file, a folder
 Resume is automatic: re-running the same command skips already-assembled
 books and resumes mid-PDF runs from where they left off.
 """
+
 from __future__ import annotations
 
 import logging
@@ -108,15 +109,24 @@ logger = logging.getLogger(__name__)
 )
 # Deprecated flags kept as silent aliases so existing callers don't break.
 @click.option(
-    "--batch-size", type=int, default=None, hidden=True,
+    "--batch-size",
+    type=int,
+    default=None,
+    hidden=True,
     help="Deprecated: pages now flow through a worker pool individually.",
 )
 @click.option(
-    "--max-workers", type=int, default=None, hidden=True,
+    "--max-workers",
+    type=int,
+    default=None,
+    hidden=True,
     help="Deprecated alias for --workers.",
 )
 @click.option(
-    "--fail-fast", is_flag=True, default=False, hidden=True,
+    "--fail-fast",
+    is_flag=True,
+    default=False,
+    hidden=True,
     help="Deprecated: per-page errors no longer abort the run.",
 )
 def main(
@@ -218,7 +228,9 @@ def main(
             log_every=log_every,
         )
     except KeyboardInterrupt:
-        click.echo("\ninterrupted; partial state preserved on disk for resume.", err=True)
+        click.echo(
+            "\ninterrupted; partial state preserved on disk for resume.", err=True
+        )
         sys.exit(130)
 
     failed_pages = _count_failed_pages(books)

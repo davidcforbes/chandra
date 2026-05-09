@@ -17,6 +17,7 @@ Key invariants:
   artifacts (skip), then for ``.partial/`` (resume on remaining pages), then
   starts fresh.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -137,9 +138,8 @@ def _prepare_book(
     stem_dir.mkdir(parents=True, exist_ok=True)
 
     # Source PDF changed under us? Purge stale .partial.
-    if (
-        manifest.partial_dir(stem_dir).exists()
-        and not manifest.source_matches(stem_dir, source_path)
+    if manifest.partial_dir(stem_dir).exists() and not manifest.source_matches(
+        stem_dir, source_path
     ):
         logger.warning(
             "source for %s changed since last run; purging stale .partial/", stem
@@ -425,9 +425,7 @@ def run_pipeline(
 
     progress = Progress(log_every=log_every)
     for book in books:
-        progress.register_book(
-            book.stem, len(book.expected_pages), book.already_done
-        )
+        progress.register_book(book.stem, len(book.expected_pages), book.already_done)
 
     stop_event = threading.Event()
     gk = dict(generate_kwargs or {})
@@ -481,7 +479,9 @@ def run_pipeline(
     for b in books:
         if (b.stem_dir / f"{b.stem}.md").exists():
             continue
-        pages_pending += len(set(b.expected_pages) - manifest.read_partial_state(b.stem_dir))
+        pages_pending += len(
+            set(b.expected_pages) - manifest.read_partial_state(b.stem_dir)
+        )
 
     return {
         "books": len(books),
@@ -496,9 +496,7 @@ def _assemble_only(
     """Fast-path when every book's pages are already on disk: just assemble."""
     progress = Progress()
     for book in books:
-        progress.register_book(
-            book.stem, len(book.expected_pages), book.already_done
-        )
+        progress.register_book(book.stem, len(book.expected_pages), book.already_done)
         try:
             stats = manifest.assemble_book(
                 book.stem_dir,

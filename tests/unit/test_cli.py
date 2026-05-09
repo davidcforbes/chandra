@@ -85,9 +85,7 @@ class TestCliRun:
         out_dir = tmp_path / "out"
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli.main, [str(in_dir), str(out_dir), "--method", "hf"]
-        )
+        result = runner.invoke(cli.main, [str(in_dir), str(out_dir), "--method", "hf"])
         assert result.exit_code == 0, result.output
         assert (out_dir / "img" / "img.md").exists()
         assert (out_dir / "img" / "chunks.jsonl").exists()
@@ -153,9 +151,7 @@ class TestRecursiveAndGlob:
         out_dir = tmp_path / "out"
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli.main, [str(in_dir), str(out_dir), "--method", "hf"]
-        )
+        result = runner.invoke(cli.main, [str(in_dir), str(out_dir), "--method", "hf"])
         assert result.exit_code == 0, result.output
         assert (out_dir / "a" / "a.md").exists()
         # Subdir file NOT processed without --recursive.
@@ -179,9 +175,7 @@ class TestResume:
         (stem_dir / "img.md").write_text("already done")
 
         runner = CliRunner()
-        result = runner.invoke(
-            cli.main, [str(in_dir), str(out_dir), "--method", "hf"]
-        )
+        result = runner.invoke(cli.main, [str(in_dir), str(out_dir), "--method", "hf"])
         assert result.exit_code == 0, result.output
         assert "every supported file is already assembled" in result.output
         assert fake_model.generate.call_count == 0
@@ -302,9 +296,7 @@ def test_extracted_images_are_saved_to_output(tmp_path):
     instance.generate.side_effect = _generate
     with patch.object(cli, "InferenceManager", return_value=instance):
         runner = CliRunner()
-        result = runner.invoke(
-            cli.main, [str(in_dir), str(out_dir), "--method", "hf"]
-        )
+        result = runner.invoke(cli.main, [str(in_dir), str(out_dir), "--method", "hf"])
     assert result.exit_code == 0, result.output
     assert (out_dir / "img" / "figure_1.webp").exists()
 

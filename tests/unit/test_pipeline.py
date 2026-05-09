@@ -9,6 +9,7 @@ and the ``InferenceManager``. Tests focus on:
 - Assembler running on completion
 - End-to-end pipeline with synthetic pages
 """
+
 from __future__ import annotations
 
 import json
@@ -16,7 +17,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Iterator
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from PIL import Image
@@ -356,9 +357,7 @@ class TestRunPipeline:
             _fake_batch_output("book", batch[0].page_num) for _ in batch
         ]
 
-        stats = pipeline.run_pipeline(
-            [book], model=model, n_workers=2, log_every=10
-        )
+        stats = pipeline.run_pipeline([book], model=model, n_workers=2, log_every=10)
         assert stats["books"] == 1
         assert stats["pages_processed"] == 4
         assert stats["pages_pending"] == 0

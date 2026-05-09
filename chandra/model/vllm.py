@@ -209,9 +209,7 @@ def generate_vllm(
     # is what InferenceManager relies on.
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(
-                process_item, item, max_retries, max_failure_retries
-            ): idx
+            executor.submit(process_item, item, max_retries, max_failure_retries): idx
             for idx, item in enumerate(batch)
         }
         completed: list[tuple[int, GenerationResult]] = []

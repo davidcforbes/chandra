@@ -9,6 +9,7 @@ These import the HF-backend InferenceManager and therefore require GPU
 access for non-trivial inputs. The simple_text_image fixture comes from
 tests/conftest.py.
 """
+
 from __future__ import annotations
 
 import io

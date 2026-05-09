@@ -1,4 +1,5 @@
 """Unit tests for chandra.manifest — atomic writes, partial state, assembly."""
+
 from __future__ import annotations
 
 import json
@@ -103,7 +104,9 @@ class TestReadPartialState:
 
 
 class TestSourceFingerprint:
-    def _make_pdf(self, tmp_path: Path, name: str = "test.pdf", size: int = 256) -> Path:
+    def _make_pdf(
+        self, tmp_path: Path, name: str = "test.pdf", size: int = 256
+    ) -> Path:
         path = tmp_path / name
         path.write_bytes(b"x" * size)
         return path
@@ -282,7 +285,12 @@ class TestAssembleBook:
         assemble_book(stem_dir, "book.pdf")
         md = (stem_dir / "book.md").read_text(encoding="utf-8")
         # Page 0 must appear before page 1 must appear before page 2 etc.
-        assert md.find("# Page 0") < md.find("# Page 1") < md.find("# Page 2") < md.find("# Page 3")
+        assert (
+            md.find("# Page 0")
+            < md.find("# Page 1")
+            < md.find("# Page 2")
+            < md.find("# Page 3")
+        )
 
     def test_idempotent_re_assemble(self, tmp_path: Path):
         # If we call assemble_book twice (e.g. crash then retry), the result
