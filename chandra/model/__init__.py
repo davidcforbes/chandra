@@ -49,7 +49,13 @@ class InferenceManager:
 
         output = []
         for result, input_item in zip(results, batch):
-            chunks = parse_chunks(result.raw, input_item.image, bbox_scale=bbox_scale)
+            chunks = parse_chunks(
+                result.raw,
+                input_item.image,
+                bbox_scale=bbox_scale,
+                file_stem=input_item.file_stem,
+                page_num=input_item.page_num,
+            )
             output.append(
                 BatchOutputItem(
                     markdown=parse_markdown(result.raw, **output_kwargs),
