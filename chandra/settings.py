@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     VLLM_MODEL_NAME: str = "chandra"
     VLLM_GPUS: str = "0"
     MAX_VLLM_RETRIES: int = 6
+    # Per-request timeout in seconds. The OpenAI SDK default of 600s is too
+    # tight when running vLLM on a Windows desktop GPU: the compositor
+    # periodically preempts the GPU, throughput drops to 0 tokens/s for
+    # 10+ seconds at a time, and a long-generation page (close to
+    # MAX_OUTPUT_TOKENS) accumulates enough stall time to trip the
+    # client timeout. 1200s gives plenty of headroom while still
+    # surfacing genuinely hung requests.
+    VLLM_CLIENT_TIMEOUT: float = 1200.0
 
     class Config:
         env_file = _resolve_env_file()

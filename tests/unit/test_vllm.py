@@ -89,6 +89,30 @@ class TestClientCache:
             c2 = vllm_mod.get_openai_client("http://a", "k", custom_headers={"x": "2"})
             assert c1 is not c2
 
+    def test_timeout_is_passed_to_openai_constructor(self):
+        with patch.object(vllm_mod, "OpenAI") as fake_cls:
+            fake_cls.side_effect = lambda **kw: MagicMock()
+            vllm_mod.get_openai_client("http://a", "k", timeout=1200.0)
+            assert fake_cls.call_count == 1
+            kwargs = fake_cls.call_args.kwargs
+            assert kwargs["timeout"] == 1200.0
+
+    def test_no_timeout_omits_kwarg(self):
+        # Without an explicit timeout we don't override the SDK default —
+        # callers can still use the OpenAI client's built-in 600s.
+        with patch.object(vllm_mod, "OpenAI") as fake_cls:
+            fake_cls.side_effect = lambda **kw: MagicMock()
+            vllm_mod.get_openai_client("http://a", "k")
+            kwargs = fake_cls.call_args.kwargs
+            assert "timeout" not in kwargs
+
+    def test_different_timeouts_get_different_clients(self):
+        with patch.object(vllm_mod, "OpenAI") as fake_cls:
+            fake_cls.side_effect = lambda **kw: MagicMock()
+            c1 = vllm_mod.get_openai_client("http://a", "k", timeout=600.0)
+            c2 = vllm_mod.get_openai_client("http://a", "k", timeout=1200.0)
+            assert c1 is not c2
+
 
 # ---------- _classify_error (chandra-6y1) ----------
 

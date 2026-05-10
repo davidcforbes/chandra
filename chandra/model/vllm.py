@@ -55,22 +55,33 @@ def get_openai_client(
     api_base: str,
     api_key: str,
     custom_headers: Optional[dict] = None,
+    timeout: float | None = None,
 ) -> OpenAI:
-    """Return a memoized OpenAI client keyed by (base, key, headers).
+    """Return a memoized OpenAI client keyed by (base, key, headers, timeout).
 
     Constructing a fresh ``OpenAI`` per request creates a new HTTP connection
     pool each time. This cache lets the executor reuse keep-alive connections
     across batches without thread-safety hazards (the OpenAI SDK is
     thread-safe).
+
+    ``timeout`` overrides the SDK default (600s). For Windows + desktop GPU
+    workloads, ``settings.VLLM_CLIENT_TIMEOUT`` (1200s by default) is the
+    right value because the compositor periodically preempts the GPU and
+    stalls per-request progress.
     """
     headers_key = tuple(sorted(custom_headers.items())) if custom_headers else None
-    cache_key = (api_base, api_key, headers_key)
+    cache_key = (api_base, api_key, headers_key, timeout)
     with _CLIENT_CACHE_LOCK:
         client = _CLIENT_CACHE.get(cache_key)
         if client is None:
-            client = OpenAI(
-                api_key=api_key, base_url=api_base, default_headers=custom_headers
-            )
+            kwargs: dict = {
+                "api_key": api_key,
+                "base_url": api_base,
+                "default_headers": custom_headers,
+            }
+            if timeout is not None:
+                kwargs["timeout"] = timeout
+            client = OpenAI(**kwargs)
             _CLIENT_CACHE[cache_key] = client
         return client
 
@@ -110,6 +121,7 @@ def generate_vllm(
         api_base=vllm_api_base,
         api_key=settings.VLLM_API_KEY,
         custom_headers=custom_headers,
+        timeout=settings.VLLM_CLIENT_TIMEOUT,
     )
     model_name = settings.VLLM_MODEL_NAME
 
