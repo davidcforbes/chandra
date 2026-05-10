@@ -171,6 +171,14 @@ def _prepare_book(
     # Already done? Canonical .md present.
     canonical_md = stem_dir / f"{stem}.md"
     if canonical_md.exists() and canonical_md.stat().st_size > 0:
+        # Opportunistic cleanup: a previous run may have left .partial/
+        # behind because Windows held a transient delete-pending lock on
+        # .partial/pages. The lock typically clears within minutes; on
+        # this re-discover pass we silently retry. quiet=True suppresses
+        # the per-book warning since these orphans are inert and clear
+        # naturally over time.
+        if manifest.partial_dir(stem_dir).exists():
+            manifest.purge_partial(stem_dir, quiet=True)
         return None
 
     stem_dir.mkdir(parents=True, exist_ok=True)

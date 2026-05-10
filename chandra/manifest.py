@@ -130,7 +130,7 @@ def source_matches(stem_dir: Path, source_pdf: Path) -> bool:
 _PURGE_RETRY_DELAYS = (0, 0.1, 0.25, 0.5, 1.0, 2.0)
 
 
-def purge_partial(stem_dir: Path) -> None:
+def purge_partial(stem_dir: Path, quiet: bool = False) -> bool:
     """Wipe ``.partial/`` with retries on transient Windows lock errors.
 
     On Windows, ``shutil.rmtree`` of a freshly-written directory frequently
@@ -138,28 +138,35 @@ def purge_partial(stem_dir: Path) -> None:
     violation) because antivirus, Search Indexer, or the parent process
     briefly holds a handle on a just-created file or directory. The
     handles release within seconds; we retry with exponential-ish backoff
-    rather than failing assembly. Final fallback: log a warning and leave
-    ``.partial/`` in place — the book's canonical artifacts are already
-    committed, so the next run can clean it up via the source-fingerprint
-    purge path."""
+    rather than failing assembly.
+
+    Returns ``True`` if ``.partial/`` is gone after the call, ``False`` if
+    it remains. Final fallback when retries are exhausted: log a warning
+    (or stay silent when ``quiet=True``) and return ``False`` — the book's
+    canonical artifacts are already committed, so the next run can clean
+    it up. ``quiet=True`` is for opportunistic cleanup at discover-time on
+    already-completed books, where a still-locked dir is expected and not
+    worth alerting on every run."""
     p = partial_dir(stem_dir)
     if not p.exists():
-        return
+        return True
     last_exc: Exception | None = None
     for delay in _PURGE_RETRY_DELAYS:
         if delay:
             time.sleep(delay)
         try:
             shutil.rmtree(p)
-            return
+            return True
         except (PermissionError, OSError) as exc:
             last_exc = exc
-    logger.warning(
-        "purge_partial gave up after retries on %s: %s; "
-        "canonical artifacts are committed, .partial/ left for cleanup",
-        p,
-        last_exc,
-    )
+    if not quiet:
+        logger.warning(
+            "purge_partial gave up after retries on %s: %s; "
+            "canonical artifacts are committed, .partial/ left for cleanup",
+            p,
+            last_exc,
+        )
+    return False
 
 
 # ---------- assembler -----------------------------------------------------

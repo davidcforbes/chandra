@@ -209,10 +209,45 @@ class TestSourceFingerprint:
         )
 
         with caplog.at_level("WARNING", logger="chandra.manifest"):
-            purge_partial(stem_dir)
+            ok = purge_partial(stem_dir)
+        assert ok is False
         assert any("gave up" in r.message for r in caplog.records)
         # Dir still on disk; that's the documented fallback.
         assert partial_dir(stem_dir).exists()
+
+    def test_purge_partial_quiet_suppresses_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    ):
+        # The opportunistic-cleanup path at startup (quiet=True) should NOT
+        # log a warning when the dir is still locked — these orphans are
+        # expected on Windows and clear naturally on subsequent runs.
+        pdf = self._make_pdf(tmp_path)
+        stem_dir = tmp_path / "stem"
+        write_state(stem_dir, pdf, expected_pages=[0])
+
+        from chandra import manifest as mf
+
+        monkeypatch.setattr(mf.time, "sleep", lambda *_: None)
+        monkeypatch.setattr(
+            mf.shutil,
+            "rmtree",
+            lambda *a, **kw: (_ for _ in ()).throw(
+                PermissionError("[WinError 5] Access is denied")
+            ),
+        )
+
+        with caplog.at_level("WARNING", logger="chandra.manifest"):
+            ok = purge_partial(stem_dir, quiet=True)
+        assert ok is False
+        assert not any("gave up" in r.message for r in caplog.records)
+
+    def test_purge_partial_returns_true_on_success(self, tmp_path: Path):
+        pdf = self._make_pdf(tmp_path)
+        stem_dir = tmp_path / "stem"
+        write_state(stem_dir, pdf, expected_pages=[0])
+        assert purge_partial(stem_dir) is True
+        # Already gone — second call short-circuits to True.
+        assert purge_partial(stem_dir) is True
 
 
 # ---------- assemble_book ----------------------------------------------
