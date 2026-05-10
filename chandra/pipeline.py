@@ -230,20 +230,29 @@ def _prepare_book(
 class Progress:
     """Thread-safe counters with one-line stdout updates per page completion.
 
-    Output format: ``[stem]  N/T  p0042  q=14``. Cheap to parse, friendly
-    to redirected logs (no carriage returns / ANSI).
+    Output format::
+
+        Book # 3 of 200, How MSPs and MSSPs ..., Page # 4 of 19  q=14
+
+    Each book registered through ``register_book`` gets a 1-based index in
+    registration order. ``page_num`` is rendered 1-indexed (humans count
+    from 1; the on-disk artifacts stay 0-indexed).
     """
 
     def __init__(self, log_every: int = 1):
         self._lock = threading.Lock()
         self._totals: dict[str, int] = {}
         self._completed: dict[str, int] = {}
+        self._book_index: dict[str, int] = {}
+        self._n_books = 0
         self._log_every = max(1, log_every)
 
     def register_book(self, stem: str, total: int, already_done: int) -> None:
         with self._lock:
+            self._n_books += 1
             self._totals[stem] = total
             self._completed[stem] = already_done
+            self._book_index[stem] = self._n_books
 
     def page_done(
         self, stem: str, page_num: int, queue_size: int = -1, error: bool = False
@@ -252,21 +261,26 @@ class Progress:
             self._completed[stem] = self._completed.get(stem, 0) + 1
             done = self._completed[stem]
             total = self._totals.get(stem, 0)
+            book_idx = self._book_index.get(stem, 0)
+            n_books = self._n_books
         if done % self._log_every != 0 and done != total:
             return
         flag = " ERR" if error else ""
         suffix = f"  q={queue_size}" if queue_size >= 0 else ""
-        # Truncate long stems; keep alignment readable.
-        stem_short = stem if len(stem) <= 40 else stem[:37] + "..."
+        # page_num is 0-indexed on disk and in the API; humans read 1-indexed.
         print(
-            f"  [{stem_short:<40}]  {done}/{total}  p{page_num:04d}{flag}{suffix}",
+            f"  Book # {book_idx} of {n_books}, {stem}, "
+            f"Page # {page_num + 1} of {total}{flag}{suffix}",
             flush=True,
         )
 
     def book_assembled(self, stem: str, num_pages: int, num_chunks: int) -> None:
-        stem_short = stem if len(stem) <= 40 else stem[:37] + "..."
+        with self._lock:
+            book_idx = self._book_index.get(stem, 0)
+            n_books = self._n_books
         print(
-            f"  ✓ assembled [{stem_short}]  {num_pages} pages, {num_chunks} chunks",
+            f"  ✓ Book # {book_idx} of {n_books} assembled: {stem}  "
+            f"({num_pages} pages, {num_chunks} chunks)",
             flush=True,
         )
 

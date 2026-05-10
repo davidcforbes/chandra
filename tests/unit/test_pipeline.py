@@ -248,10 +248,28 @@ class TestProgress:
         p.page_done("book", page_num=0, queue_size=2)
         p.page_done("book", page_num=1, queue_size=1)
         out = capsys.readouterr().out
-        assert "1/3" in out
-        assert "2/3" in out
-        assert "p0000" in out
-        assert "p0001" in out
+        # "Book # 1 of 1, book, Page # 1 of 3 q=2" / Page # 2 of 3
+        assert "Book # 1 of 1" in out
+        assert ", book, " in out
+        assert "Page # 1 of 3" in out  # page 0 → 1-indexed
+        assert "Page # 2 of 3" in out
+
+    def test_book_index_increments_in_registration_order(
+        self, capsys: pytest.CaptureFixture
+    ):
+        p = Progress()
+        p.register_book("alpha", total=2, already_done=0)
+        p.register_book("beta", total=2, already_done=0)
+        p.register_book("gamma", total=2, already_done=0)
+        p.page_done("beta", page_num=0)
+        p.page_done("alpha", page_num=0)
+        p.page_done("gamma", page_num=0)
+        out = capsys.readouterr().out
+        # Each book stamped with its registration-order index, regardless
+        # of the order pages complete.
+        assert "Book # 1 of 3, alpha" in out
+        assert "Book # 2 of 3, beta" in out
+        assert "Book # 3 of 3, gamma" in out
 
     def test_log_every_throttles_output(self, capsys: pytest.CaptureFixture):
         p = Progress(log_every=5)
@@ -261,14 +279,16 @@ class TestProgress:
         out = capsys.readouterr().out
         # Lines appear at completions 5 and 10 — both intermediate.
         # 11 doesn't trigger (not a multiple of 5, not the total).
-        lines = [ln for ln in out.splitlines() if "p0" in ln]
+        lines = [ln for ln in out.splitlines() if "Book #" in ln]
         assert len(lines) == 2
 
     def test_book_assembled_prints_summary(self, capsys: pytest.CaptureFixture):
         p = Progress()
+        p.register_book("book", total=5, already_done=0)
         p.book_assembled("book", num_pages=5, num_chunks=42)
         out = capsys.readouterr().out
-        assert "assembled" in out
+        assert "Book # 1 of 1 assembled" in out
+        assert "book" in out
         assert "5 pages" in out
         assert "42 chunks" in out
 
