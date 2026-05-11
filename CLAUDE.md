@@ -124,7 +124,7 @@ When changing prompt labels, allowed tags, or bbox encoding, update both `prompt
 
 ### Settings & env file
 
-All config lives in `chandra/settings.py` (pydantic-settings). `_resolve_env_file` looks for **`.env` first** (python-dotenv default), falling back to legacy `local.env`. Notable knobs: `MODEL_CHECKPOINT`, `MAX_OUTPUT_TOKENS`, `VLLM_API_BASE`, `VLLM_MODEL_NAME`, `VLLM_GPUS`, `VLLM_IMAGE_FORMAT` (default JPEG), `VLLM_IMAGE_QUALITY` (default 92), `BBOX_SCALE`, `IMAGE_DPI`, `MIN_PDF_IMAGE_DIM`, `MIN_IMAGE_DIM`.
+All config lives in `chandra/settings.py` (pydantic-settings). `_resolve_env_file` looks for **`.env` first** (python-dotenv default), falling back to legacy `local.env`. Notable knobs: `MODEL_CHECKPOINT`, `MAX_OUTPUT_TOKENS`, `VLLM_API_BASE`, `VLLM_MODEL_NAME`, `VLLM_GPUS`, `VLLM_IMAGE_FORMAT` (default JPEG), `VLLM_IMAGE_QUALITY` (default 92), `VLLM_CLIENT_TIMEOUT` (default 1200s; overrides the OpenAI SDK's 600s default to absorb periodic Windows GPU compositor stalls), `MAX_VLLM_RETRIES` (default 6), `BBOX_SCALE`, `IMAGE_DPI`, `MIN_PDF_IMAGE_DIM`, `MIN_IMAGE_DIM`.
 
 ### vLLM client + retry loop
 
