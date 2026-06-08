@@ -1,19 +1,19 @@
-<p align="center">
-  <img src="assets/datalab-logo.png" alt="Datalab Logo" width="150"/>
-</p>
-<h1 align="center">Datalab</h1>
-<p align="center">
-  <strong>State of the Art models for Document Intelligence</strong>
-</p>
-<p align="center">
-  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/Code%20License-Apache_2.0-green.svg" alt="Code License"></a>
-  <a href="https://www.datalab.to/pricing"><img src="https://img.shields.io/badge/Model%20License-OpenRAIL--M-blue.svg" alt="Model License"></a>
-  <a href="https://discord.gg/KuZwXNGnfH"><img src="https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
-</p>
-<p align="center">
-  <a href="https://www.datalab.to"><img src="https://img.shields.io/badge/Homepage-datalab.to-blue" alt="Homepage"></a>
-  <a href="https://documentation.datalab.to"><img src="https://img.shields.io/badge/Docs-Read%20the%20docs-blue" alt="Docs"></a>
-  <a href="https://www.datalab.to/playground"><img src="https://img.shields.io/badge/Playground-Try%20it-orange" alt="Public Playground"></a>
+<p align="center">  
+  <img src="assets/datalab-logo.png" alt="Datalab Logo" width="150"/>  
+</p>  
+<h1 align="center">Datalab</h1>  
+<p align="center">  
+  <strong>State of the Art models for Document Intelligence</strong>  
+</p>  
+<p align="center">  
+  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/Code%20License-Apache_2.0-green.svg" alt="Code License"></a>  
+  <a href="https://www.datalab.to/pricing"><img src="https://img.shields.io/badge/Model%20License-OpenRAIL--M-blue.svg" alt="Model License"></a>  
+  <a href="https://discord.gg/KuZwXNGnfH"><img src="https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white" alt="Discord"></a>  
+</p>  
+<p align="center">  
+  <a href="https://www.datalab.to"><img src="https://img.shields.io/badge/Homepage-datalab.to-blue" alt="Homepage"></a>  
+  <a href="https://documentation.datalab.to"><img src="https://img.shields.io/badge/Docs-Read%20the%20docs-blue" alt="Docs"></a>  
+  <a href="https://www.datalab.to/playground"><img src="https://img.shields.io/badge/Playground-Try%20it-orange" alt="Public Playground"></a>  
 </p>
 
 <hr/>
@@ -185,6 +185,23 @@ This launches a Docker container with optimized inference settings. Configure vi
 
 You can also start your own vllm server with the `datalab-to/chandra-ocr-2` model.
 
+#### Native Windows (no Docker)
+
+On Windows with a native vLLM build, skip Docker entirely:
+
+```powershell
+# serve on http://localhost:8000/v1 as model "chandra"
+pwsh C:\dev\chandra\scripts\serve_vllm_native.ps1
+
+# or run the whole pipeline (starts the native server, then the CLI)
+pwsh C:\dev\chandra\scripts\run_pipeline_native.ps1 -BookDir <dir> -OutDir <dir>
+```
+
+`serve_vllm_native.ps1` exposes the identical endpoint/model contract, so the
+`chandra` CLI and other consumers work unchanged. Defaults are tuned for a 16 GB
+GPU (`--gpu-memory-utilization 0.80`, `--max-model-len 18000`, `--enforce-eager`);
+pass `-Cudagraphs`, `-GpuMemUtil`, `-MaxModelLen` to adjust.
+
 ### Configuration
 
 Settings can be configured via environment variables or a `local.env` file:
@@ -221,7 +238,6 @@ This code is Apache 2.0, and our model weights use a modified OpenRAIL-M license
 | GPT-4o (Anchored)         |   53.5   |   74.5   |   70.0   |   40.7   |        93.8         |     69.3     |      60.6      | 96.8 |   69.9 ± 1.1   | olmocr repo |
 | Qwen 3 VL 8B              |   70.2   |   75.1   |   45.6   |   37.5   |        89.1         |     62.1     |      43.0      | 94.3 |   64.6 ± 1.1   | Own benchmarks |
 | Gemini Flash 2 (Anchored) |   54.5   |   56.1   |   72.1   |   34.2   |        64.7         |     61.5     |      71.5      | 95.6 |   63.8 ± 1.2   | olmocr repo |
-
 
 # Multilingual benchmark table
 
