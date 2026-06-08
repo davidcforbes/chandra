@@ -190,8 +190,8 @@ You can also start your own vllm server with the `datalab-to/chandra-ocr-2` mode
 On Windows with a native vLLM build, skip Docker entirely:
 
 ```powershell
-# serve on http://localhost:8000/v1 as model "chandra"
-pwsh C:\dev\chandra\scripts\serve_vllm_native.ps1
+# serve on http://localhost:8000/v1 as model "chandra" (serve-only, no pipeline)
+pwsh C:\dev\chandra\scripts\serve_vllm.ps1
 
 # or run the whole pipeline (starts the native server, then the CLI)
 pwsh C:\dev\chandra\scripts\run_pipeline_native.ps1 -BookDir <dir> -OutDir <dir>

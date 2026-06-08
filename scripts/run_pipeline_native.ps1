@@ -27,7 +27,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ChandraExe   = 'C:\dev\chandra\.venv\Scripts\chandra.exe'
-$ServeScript  = Join-Path $PSScriptRoot 'serve_vllm_native.ps1'
+$ServeScript  = Join-Path $PSScriptRoot 'serve_vllm.ps1'  # serve-only native vLLM launcher
 $VllmHealth   = "http://localhost:$Port/v1/models"
 
 function Write-Step ($m) { Write-Host "==> $m" -ForegroundColor Cyan }

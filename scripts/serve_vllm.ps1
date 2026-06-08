@@ -1,18 +1,24 @@
 <#
 .SYNOPSIS
-    Serve Chandra OCR on the NATIVE Windows vLLM build (no Docker Desktop).
+    Launch the native Windows vLLM server for Chandra OCR (no Docker, no pipeline).
 
 .DESCRIPTION
-    Drop-in replacement for the `docker run vllm/vllm-openai ...` launcher in
-    `scripts/vllm.py` / `run_pipeline.ps1`. Exposes the exact same contract every
-    Chandra consumer already targets:
+    SERVE-ONLY launcher: brings up `datalab-to/chandra-ocr-2` as model `chandra`
+    on http://localhost:<Port>/v1 using the native Windows vLLM build at
+    C:\dev\vllm-windows. It does NOT run the chandra CLI pipeline — it only serves
+    the OCR endpoint that consumers target:
 
         endpoint   http://localhost:8000/v1
         model      chandra   (--served-model-name)
 
-    so the `chandra` CLI and Book-Scan (`--vllm-base`/`--model` defaults) work
-    unchanged. Serves in the foreground; Ctrl-C to stop. First load from the HF
-    cache is ~2-3 minutes.
+    Consumers that just need this endpoint up:
+      * LLM-Wiki's chandra ingest worker (probes /v1/models, drives chandra.exe)
+      * the `chandra` CLI run manually
+      * Book-Scan `ocr-folder --ocr chandra`
+
+    Serves in the foreground; Ctrl-C to stop. First load from the HF cache is
+    ~2-3 minutes. For an end-to-end batch (server + chandra CLI) use
+    run_pipeline_native.ps1 (native) or run_pipeline.ps1 (Docker) instead.
 
     Windows specifics handled here:
       * VLLM_USE_FLASHINFER_SAMPLER=0  (FlashInfer's sampler JIT fails on Windows)
@@ -21,11 +27,10 @@
         source checkout (the source tree has no compiled vllm._C)
 
 .NOTES
-    VRAM (16 GB mobile RTX 4090): the Docker config uses .88 / max-model-len
-    18000. Natively, the Windows desktop holds ~3 GB, so the safe default here is
-    --gpu-memory-utilization 0.85 / --max-model-len 16000. If you hit an OOM at
-    load, lower -GpuMemUtil (e.g. 0.80) or -MaxModelLen; if you have headroom,
-    raise them toward the Docker values.
+    VRAM (16 GB mobile RTX 4090): defaults --gpu-memory-utilization 0.80 /
+    --max-model-len 18000 / --enforce-eager (validated ~15.4 GB; the desktop
+    holds ~3 GB). If you OOM at load, lower -GpuMemUtil (e.g. 0.75) or
+    -MaxModelLen; with headroom, raise them or pass -Cudagraphs.
 #>
 
 [CmdletBinding()]
